@@ -59,6 +59,9 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
   {
   ESP_LOGI(TAG, "Nissan Leaf v3.0 vehicle module");
 
+  m_gids = MyMetrics.InitInt("xnl.v.bat.gids", SM_STALE_HIGH, 0);
+  m_hx = MyMetrics.InitFloat("xnl.v.bat.hx", SM_STALE_HIGH, 0);
+
   RegisterCanBus(1,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS);
   RegisterCanBus(2,CAN_MODE_ACTIVE,CAN_SPEED_500KBPS);
 
@@ -74,31 +77,6 @@ OvmsVehicleNissanLeaf::OvmsVehicleNissanLeaf()
 OvmsVehicleNissanLeaf::~OvmsVehicleNissanLeaf()
   {
   ESP_LOGI(TAG, "Shutdown Nissan Leaf vehicle module");
-  }
-
-////////////////////////////////////////////////////////////////////////
-// vehicle_nissanleaf_car_on()
-// Takes care of setting all the state appropriate when the car is on
-// or off. Centralized so we can more easily make on and off mirror
-// images.
-//
-
-void vehicle_nissanleaf_car_on(bool isOn)
-  {
-  StandardMetrics.ms_v_env_on->SetValue(isOn);
-  StandardMetrics.ms_v_env_awake->SetValue(isOn);
-  // We don't know if handbrake is on or off, but it's usually off when the car is on.
-  StandardMetrics.ms_v_env_handbrake->SetValue(!isOn);
-// TODO this is supposed to be a one-shot but car_parktime doesn't work in v3 yet
-// further it's not clear if we even need to do this
-//  if (isOn && car_parktime != 0)
-//    {
-//    StandardMetrics.ms_v_door_chargeport->SetValue(false);
-//    StandardMetrics.ms_v_charge_pilot->SetValue(false);
-//    StandardMetrics.ms_v_charge_inprogress->SetValue(false);
-//    StandardMetrics.ms_v_charge_state->SetValue("stopped");
-//    StandardMetrics.ms_v_charge_substate->SetValue("stopped");
-//    }
   }
 
 ////////////////////////////////////////////////////////////////////////
@@ -194,8 +172,6 @@ void OvmsVehicleNissanLeaf::PollStart(void)
 void OvmsVehicleNissanLeaf::PollContinue(CAN_frame_t* p_frame)
   {
   uint8_t *d = p_frame->data.u8;
-  uint16_t hx;
-  uint32_t ah;
   if (nl_poll_state == IDLE)
     {
     // we're not expecting anything, maybe something else is polling?
@@ -222,24 +198,35 @@ void OvmsVehicleNissanLeaf::PollContinue(CAN_frame_t* p_frame)
       nl_poll_state = static_cast<PollState>(static_cast<int>(nl_poll_state) + 1);
       break;
     case FOUR:
-      hx = d[2];
-      hx = hx << 8;
-      hx = hx | d[3];
-      // LeafSpy calculates SOH by dividing Ah by the nominal capacity.
-      // Since SOH is derived from Ah, we don't bother storing it separately.
-      // Instead we store Ah in CAC (below) and store Hx in SOH.
-      StandardMetrics.ms_v_bat_soh->SetValue(hx / 100.0);
-      nl_poll_state = static_cast<PollState>(static_cast<int>(nl_poll_state) + 1);
-      break;
+      {
+        uint16_t hx;
+        hx = d[2];
+        hx = hx << 8;
+        hx = hx | d[3];
+        m_hx->SetValue(hx / 100.0);
+
+        nl_poll_state = static_cast<PollState>(static_cast<int>(nl_poll_state) + 1);
+        break;
+      }
     case FIVE:
-      ah = d[2];
-      ah = ah << 8;
-      ah = ah | d[3];
-      ah = ah << 8;
-      ah = ah | d[4];
-      StandardMetrics.ms_v_bat_cac->SetValue(ah / 10000.0);
-      nl_poll_state = IDLE;
-      break;
+      {
+        uint32_t ah10000;
+        ah10000 = d[2];
+        ah10000 = ah10000 << 8;
+        ah10000 = ah10000 | d[3];
+        ah10000 = ah10000 << 8;
+        ah10000 = ah10000 | d[4];
+        float ah = ah10000 / 10000.0;
+        StandardMetrics.ms_v_bat_cac->SetValue(ah);
+
+        // there may be a way to get the SoH directly from the BMS, but for now
+        // divide by a configurable battery size
+        float newCarAh = MyConfig.GetParamValueFloat("xnl", "newCarAh", GEN_1_NEW_CAR_AH);
+        StandardMetrics.ms_v_bat_soh->SetValue(ah / newCarAh * 100);
+
+        nl_poll_state = IDLE;
+        break;
+      }
     }
   if (nl_poll_state != IDLE)
     {
@@ -252,9 +239,6 @@ void OvmsVehicleNissanLeaf::PollContinue(CAN_frame_t* p_frame)
 void OvmsVehicleNissanLeaf::IncomingFrameCan1(CAN_frame_t* p_frame)
   {
   uint8_t *d = p_frame->data.u8;
-
-  uint16_t nl_gids;
-  uint16_t nl_max_gids = GEN_1_NEW_CAR_GIDS;
 
   switch (p_frame->MsgID)
     {
@@ -277,7 +261,8 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan1(CAN_frame_t* p_frame)
       break;
     case 0x284:
     {
-      vehicle_nissanleaf_car_on(true);
+      // certain CAN bus activity counts as state "awake"
+      StandardMetrics.ms_v_env_awake->SetValue(true);
 
       uint16_t car_speed16 = d[4];
       car_speed16 = car_speed16 << 8;
@@ -361,31 +346,50 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan1(CAN_frame_t* p_frame)
         d[1] == 0x76 || // Auto
         d[1] == 0x78;   // Manual A/C on
       StandardMetrics.ms_v_env_hvac->SetValue(hvac_candidate);
+      /* These may only reflect the centre console LEDs, which
+       * means they don't change when remote CC is operating.
+       * They should be replaced when we find better signals that
+       * indicate when heating or cooling is actually occuring.
+       */
+      StandardMetrics.ms_v_env_cooling->SetValue(d[1] & 0x10);
+      StandardMetrics.ms_v_env_heating->SetValue(d[1] & 0x02);
     }
       break;
     case 0x54c:
-    {
-      if (d[6] == 0xff)
+      /* Ambient temperature.  This one has half-degree C resolution,
+       * and seems to stay within a degree or two of the "eyebrow" temp display.
+       * App label: AMBIENT
+       */
+      if (d[6] != 0xff)
         {
-        break;
+        StandardMetrics.ms_v_env_temp->SetValue(d[6] / 2.0 - 40);
         }
-      // TODO this temperature isn't quite right
-      int8_t ambient_temp = d[6] - 56; // Fahrenheit
-      ambient_temp = (ambient_temp - 32) / 1.8f; // Celsius
-      StandardMetrics.ms_v_env_temp->SetValue(ambient_temp);
       break;
-    }
+    case 0x54f:
+      /* Climate control's measurement of temperature inside the car.
+       * Subtracting 14 is a bit of a guess worked out by observing how
+       * auto climate control reacts when this reaches the target setting.
+       */
+      if (d[0] != 20)
+        {
+        StandardMetrics.ms_v_env_cabintemp->SetValue(d[0] / 2.0 - 14);
+        }
+      break;
     case 0x5bc:
     {
-      uint16_t nl_gids_candidate = ((uint16_t) d[0] << 2) | ((d[1] & 0xc0) >> 6);
-      if (nl_gids_candidate == 1023)
+      uint16_t nl_gids = ((uint16_t) d[0] << 2) | ((d[1] & 0xc0) >> 6);
+      if (nl_gids == 1023)
         {
         // ignore invalid data seen during startup
         break;
         }
-      nl_gids = nl_gids_candidate;
-      StandardMetrics.ms_v_bat_soc->SetValue((nl_gids * 100 + (nl_max_gids / 2)) / nl_max_gids);
-      StandardMetrics.ms_v_bat_range_ideal->SetValue((nl_gids * GEN_1_NEW_CAR_RANGE_MILES + (GEN_1_NEW_CAR_GIDS / 2)) / GEN_1_NEW_CAR_GIDS);
+      uint16_t max_gids = MyConfig.GetParamValueInt("xnl", "maxGids", GEN_1_NEW_CAR_GIDS);
+      float km_per_kwh = MyConfig.GetParamValueFloat("xnl", "kmPerKWh", GEN_1_KM_PER_KWH);
+      float wh_per_gid = MyConfig.GetParamValueFloat("xnl", "whPerGid", GEN_1_WH_PER_GID);
+
+      m_gids->SetValue(nl_gids);
+      StandardMetrics.ms_v_bat_soc->SetValue((nl_gids * 100.0) / max_gids);
+      StandardMetrics.ms_v_bat_range_ideal->SetValue((nl_gids * wh_per_gid * km_per_kwh) / 1000);
     }
       break;
     case 0x5bf:
@@ -430,7 +434,10 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan1(CAN_frame_t* p_frame)
         }
       break;
     case 0x5c0:
-      if (d[0] == 0x40)
+      /* Battery Temperature as reported by the LBC.
+       * Effectively has only 7-bit precision, as the bottom bit is always 0.
+       */
+      if ( (d[0]>>6) == 1 )
         {
         StandardMetrics.ms_v_bat_temp->SetValue(d[2] / 2 - 40);
         }
@@ -443,6 +450,93 @@ void OvmsVehicleNissanLeaf::IncomingFrameCan1(CAN_frame_t* p_frame)
 
 void OvmsVehicleNissanLeaf::IncomingFrameCan2(CAN_frame_t* p_frame)
   {
+  uint8_t *d = p_frame->data.u8;
+
+  switch (p_frame->MsgID)
+    {
+    case 0x180:
+      if (d[5] != 0xff)
+        {
+        StandardMetrics.ms_v_env_throttle->SetValue(d[5] / 2.00);
+        }
+      break;
+    case 0x292:
+      if (d[6] != 0xff)
+        {
+        StandardMetrics.ms_v_env_footbrake->SetValue(d[6] / 1.39);
+        }
+      break;
+    case 0x385:
+      // not sure if this order is correct
+      if (d[2]) StandardMetrics.ms_v_tpms_fl_p->SetValue(d[2] / 4.0, PSI);
+      if (d[3]) StandardMetrics.ms_v_tpms_fr_p->SetValue(d[3] / 4.0, PSI);
+      if (d[4]) StandardMetrics.ms_v_tpms_rl_p->SetValue(d[4] / 4.0, PSI);
+      if (d[5]) StandardMetrics.ms_v_tpms_rr_p->SetValue(d[5] / 4.0, PSI);
+      break;
+    case 0x421:
+      switch ( (d[0] >> 3) & 7 )
+        {
+        case 0: // Parking
+        case 1: // Park
+        case 3: // Neutral
+        case 5: // undefined
+        case 6: // undefined
+          StandardMetrics.ms_v_env_gear->SetValue(0);
+          break;
+        case 2: // Reverse
+          StandardMetrics.ms_v_env_gear->SetValue(-1);
+          break;
+        case 4: // Drive
+        case 7: // Drive/B (ECO on some models)
+          StandardMetrics.ms_v_env_gear->SetValue(1);
+          break;
+        }
+      break;
+    case 0x510:
+      /* This seems to be outside temperature with half-degree C accuracy.
+       * It reacts a bit more rapidly than what we get from the battery.
+       * App label: PEM
+       */
+      if (d[7] != 0xff)
+        {
+        StandardMetrics.ms_v_inv_temp->SetValue(d[7] / 2.0 - 40);
+        }
+      break;
+    case 0x5c5:
+      // This is the parking brake (which is foot-operated on some models).
+      StandardMetrics.ms_v_env_handbrake->SetValue(d[0] & 4);
+      StandardMetrics.ms_v_pos_odometer->SetValue(d[1] << 16 | d[2] << 8 | d[3]);
+      break;
+    case 0x60d:
+      StandardMetrics.ms_v_door_trunk->SetValue(d[0] & 0x80);
+      StandardMetrics.ms_v_door_rr->SetValue(d[0] & 0x40);
+      StandardMetrics.ms_v_door_rl->SetValue(d[0] & 0x20);
+      StandardMetrics.ms_v_door_fr->SetValue(d[0] & 0x10);
+      StandardMetrics.ms_v_door_fl->SetValue(d[0] & 0x08);
+      StandardMetrics.ms_v_env_headlights->SetValue((d[0] & 0x02) | // dip beam
+                                                    (d[1] & 0x08)); // main beam
+      /* d[1] bits 1 and 2 indicate Start button states:
+       *   No brake:   off -> accessory -> on -> off
+       *   With brake: [off, accessory, on] -> ready to drive -> off
+       * Using "ready to drive" state to set ms_v_env_on seems sensible,
+       * though maybe "on, not ready to drive" should also count.
+       */
+      switch ((d[1]>>1) & 3)
+        {
+        case 0: // off
+        case 1: // accessory
+        case 2: // on (not ready to drive)
+          StandardMetrics.ms_v_env_on->SetValue(false);
+          break;
+        case 3: // ready to drive
+          StandardMetrics.ms_v_env_on->SetValue(true);
+          break;
+        }
+      // The two lock bits are 0x10 driver door and 0x08 other doors.
+      // We should only say "locked" if both are locked.
+      StandardMetrics.ms_v_env_locked->SetValue( (d[2] & 0x18) == 0x18);
+      break;
+    }
   }
 
 ////////////////////////////////////////////////////////////////////////
@@ -543,9 +637,9 @@ void OvmsVehicleNissanLeaf::Ticker1(uint32_t ticker)
   // the core framework?
   // perhaps interested code should be able to subscribe to "onChange" and
   // "onStale" events for each metric?
-  if (StandardMetrics.ms_v_env_on->IsStale())
+  if (StandardMetrics.ms_v_env_awake->IsStale())
     {
-    vehicle_nissanleaf_car_on(false);
+    StandardMetrics.ms_v_env_awake->SetValue(false);
     }
 
   if (nl_cc_off_ticker < (REMOTE_CC_TIME_GRID - REMOTE_CC_TIME_BATTERY)

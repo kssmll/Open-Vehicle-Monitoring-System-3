@@ -33,10 +33,16 @@
 
 #include "sdkconfig.h"
 #include "ovms_log.h"
+#include "ovms_malloc.h"
 
 #define ESP_PLATFORM 1
 #define MG_ENABLE_HTTP 1
 
+// Note: broadcast support not working reliably yet, do not enable for production!
+// #define MG_ENABLE_BROADCAST 1
+// #define MG_CTL_MSG_MESSAGE_SIZE 64    // Note: default is 8K, we only need this to trigger MG_EV_POLL
+
+// #define CONFIG_MG_ENABLE_DEBUG 1
 #ifdef CONFIG_MG_ENABLE_DEBUG
 #define MG_ENABLE_DEBUG 1
 #define CS_LOG_ENABLE_TS_DIFF 1
@@ -49,5 +55,19 @@
 #ifdef CONFIG_MG_ENABLE_DIRECTORY_LISTING
 #define MG_ENABLE_DIRECTORY_LISTING 1
 #endif
+
+// Override memory allocation macros in mongoose.c
+#define CS_COMMON_MG_MEM_H_
+#define MG_MALLOC ExternalRamMalloc
+#define MG_CALLOC ExternalRamCalloc
+#define MG_REALLOC ExternalRamRealloc
+#define MG_FREE free
+
+// Let mongoose use LWIP getaddrinfo():
+#define MG_ENABLE_SYNC_RESOLVER 1
+#define MG_ENABLE_GETADDRINFO 1
+// Note: if we can't stick to this solution due to blocking issues,
+//  we can alternatively assign the first DNS stored by netmanager
+//  to mongoose by calling mg_set_nameserver().
 
 #endif // __mg_locals_h__

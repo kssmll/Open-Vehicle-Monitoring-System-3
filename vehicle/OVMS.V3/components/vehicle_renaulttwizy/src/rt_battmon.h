@@ -37,6 +37,7 @@ struct battery_pack
   // Model
   
   UINT volt_act = 0; // current voltage in 1/10 V
+  UINT volt_new = 0; // sensor buffer
   UINT volt_min = 1000; // charge cycle min voltage
   UINT volt_max = 0; // charge cycle max voltage
   
@@ -57,8 +58,8 @@ struct battery_pack
   UINT cmod_temp_stddev_max = 0; // max cmod temperature std deviation
                               // => watch/alert bit #7 (1<<7)
   
-  UINT8 max_drive_pwr = 0; // in 500 W
-  UINT8 max_recup_pwr = 0; // in 500 W
+  int max_drive_pwr = 0; // in 500 W
+  int max_recup_pwr = 0; // in 500 W
   
   // Metrics
   
@@ -91,6 +92,7 @@ struct battery_cmod // cell module
   // Model
   
   UINT8 temp_act = 0; // current temperature in °C + 40
+  UINT8 temp_new = 0; // sensor buffer
   UINT8 temp_min = 240; // charge cycle min temperature
   UINT8 temp_max = 0; // charge cycle max temperature
   float temp_maxdev = 0; // charge cycle max temperature deviation
@@ -113,6 +115,7 @@ struct battery_cell
   // Model
   
   UINT volt_act = 0; // current voltage in 1/200 V
+  UINT volt_new = 0; // sensor buffer
   UINT volt_min = 2000; // charge cycle min voltage
   UINT volt_max = 0; // charge cycle max voltage
   float volt_maxdev = 0; // charge cycle max voltage deviation

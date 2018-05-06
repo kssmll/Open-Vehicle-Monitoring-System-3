@@ -49,8 +49,12 @@ using namespace std;
  */
 void OvmsVehicleRenaultTwizy::WebInit()
 {
+  // vehicle menu:
   MyWebServer.RegisterPage("/xrt/features", "Features", WebCfgFeatures, PageMenu_Vehicle, PageAuth_Cookie);
-  MyWebServer.RegisterPage("/xrt/battery", "Battery", WebCfgBattery, PageMenu_Vehicle, PageAuth_Cookie);
+  MyWebServer.RegisterPage("/xrt/battery", "Battery config", WebCfgBattery, PageMenu_Vehicle, PageAuth_Cookie);
+  MyWebServer.RegisterPage("/xrt/battmon", "Battery monitor", WebBattMon, PageMenu_Vehicle, PageAuth_Cookie);
+  
+  // main menu:
   MyWebServer.RegisterPage("/xrt/drivemode", "Drivemode", WebConsole, PageMenu_Main, PageAuth_Cookie);
 }
 
@@ -122,8 +126,8 @@ void OvmsVehicleRenaultTwizy::WebCfgFeatures(PageEntry_t& p, PageContext_t& c)
     kickdown = MyConfig.GetParamValueBool("xrt", "kickdown", true);
     autopower = MyConfig.GetParamValueBool("xrt", "autopower", true);
     console = MyConfig.GetParamValueBool("xrt", "console", false);
-    kd_threshold = MyConfig.GetParamValue("xrt", "kd_threshold", STR(CFG_DEFAULT_KD_THRESHOLD));
-    kd_compzero = MyConfig.GetParamValue("xrt", "kd_compzero", STR(CFG_DEFAULT_KD_COMPZERO));
+    kd_threshold = MyConfig.GetParamValue("xrt", "kd_threshold", XSTR(CFG_DEFAULT_KD_THRESHOLD));
+    kd_compzero = MyConfig.GetParamValue("xrt", "kd_compzero", XSTR(CFG_DEFAULT_KD_COMPZERO));
     gpslogint = MyConfig.GetParamValue("xrt", "gpslogint", "0");
     
     c.head(200);
@@ -194,8 +198,8 @@ void OvmsVehicleRenaultTwizy::WebCfgBattery(PageEntry_t& p, PageContext_t& c)
     }
     if (!cap_act_prc.empty()) {
       float n = atof(cap_act_prc.c_str());
-      if (n < 1 || n > 100)
-        error += "<li data-input=\"cap_act_prc\">Actual capacity percentage invalid (range 1…100)</li>";
+      if (n < 1 || n > 120)
+        error += "<li data-input=\"cap_act_prc\">Actual capacity percentage invalid (range 1…120)</li>";
     }
     if (!maxrange.empty()) {
       float n = atof(maxrange.c_str());
@@ -237,9 +241,9 @@ void OvmsVehicleRenaultTwizy::WebCfgBattery(PageEntry_t& p, PageContext_t& c)
   }
   else {
     // read configuration:
-    cap_nom_ah = MyConfig.GetParamValue("xrt", "cap_nom_ah", STR(CFG_DEFAULT_CAPACITY));
+    cap_nom_ah = MyConfig.GetParamValue("xrt", "cap_nom_ah", XSTR(CFG_DEFAULT_CAPACITY));
     cap_act_prc = MyConfig.GetParamValue("xrt", "cap_act_prc", "100");
-    maxrange = MyConfig.GetParamValue("xrt", "maxrange", STR(CFG_DEFAULT_MAXRANGE));
+    maxrange = MyConfig.GetParamValue("xrt", "maxrange", XSTR(CFG_DEFAULT_MAXRANGE));
     chargelevel = MyConfig.GetParamValue("xrt", "chargelevel", "0");
     chargemode = MyConfig.GetParamValue("xrt", "chargemode", "0");
     suffrange = MyConfig.GetParamValue("xrt", "suffrange", "0");
@@ -255,13 +259,13 @@ void OvmsVehicleRenaultTwizy::WebCfgBattery(PageEntry_t& p, PageContext_t& c)
   
   c.fieldset_start("Battery properties");
   
-  c.input("number", "Nominal capacity", "cap_nom_ah", cap_nom_ah.c_str(), "Default: " STR(CFG_DEFAULT_CAPACITY),
+  c.input("number", "Nominal capacity", "cap_nom_ah", cap_nom_ah.c_str(), "Default: " XSTR(CFG_DEFAULT_CAPACITY),
     "<p>This is the usable capacity of your battery when new.</p>",
     "min=\"1\" step=\"0.1\"", "Ah");
   c.input("number", "Actual capacity", "cap_act_prc", cap_act_prc.c_str(), "Default: 100",
-    NULL, "min=\"1\" max=\"100\" step=\"0.01\"", "%");
+    NULL, "min=\"1\" max=\"120\" step=\"0.01\"", "%");
   
-  c.input("number", "Maximum drive range", "maxrange", maxrange.c_str(), "Default: " STR(CFG_DEFAULT_MAXRANGE),
+  c.input("number", "Maximum drive range", "maxrange", maxrange.c_str(), "Default: " XSTR(CFG_DEFAULT_MAXRANGE),
     "<p>The range you normally get at 100% SOC and 20 °C.</p>",
     "min=\"1\" step=\"1\"", "km");
   
@@ -280,10 +284,10 @@ void OvmsVehicleRenaultTwizy::WebCfgBattery(PageEntry_t& p, PageContext_t& c)
   c.input_select_option("2300W", "7", chargelevel == "7");
   c.input_select_end();
 
-  c.input_radio_start("Charge limit mode", "chargemode");
-  c.input_radio_option("chargemode", "Notify", "0", chargemode == "0");
-  c.input_radio_option("chargemode", "Stop", "1", chargemode == "1");
-  c.input_radio_end();
+  c.input_radiobtn_start("Charge limit mode", "chargemode");
+  c.input_radiobtn_option("chargemode", "Notify", "0", chargemode == "0");
+  c.input_radiobtn_option("chargemode", "Stop", "1", chargemode == "1");
+  c.input_radiobtn_end();
   
   c.input_slider("Sufficient range", "suffrange", 3, "km",
     atof(suffrange.c_str()) > 0, atof(suffrange.c_str()), 0, 0, 200, 1,
@@ -327,7 +331,7 @@ void OvmsVehicleRenaultTwizy::WebConsole(PageEntry_t& p, PageContext_t& c)
       c.print(c.encode_html(output));
       c.printf(
         "<script>"
-          "$('#loadmenu btn').removeClass('base unsaved btn-warning').addClass('btn-default');"
+          "$('#loadmenu .btn').removeClass('base unsaved btn-warning').addClass('btn-default');"
           "$('#prof-%d').removeClass('btn-default').addClass('btn-warning %s');"
           , sc->m_drivemode.profile_user
           , sc->m_drivemode.unsaved ? "unsaved" : "");
@@ -371,9 +375,27 @@ void OvmsVehicleRenaultTwizy::WebConsole(PageEntry_t& p, PageContext_t& c)
     ".btn-default.base:hover, .btn-default.base:focus { background-color: #fffa62; }"
     ".unsaved > *:after { content: \"*\"; }"
     "</style>");
-  c.panel_start("primary", "Drivemode");
+  
+  c.panel_start("primary panel-single", "Drivemode");
+  
   c.printf(
     "<samp id=\"loadres\">%s</samp>", _html(buf.str()));
+  
+  c.print(
+    "<div id=\"livestatus\" class=\"receiver\">"
+      "<div class=\"row\">"
+        "<div class=\"col-sm-2 hidden-xs\"><label>Throttle:</label></div>"
+        "<div class=\"col-sm-10\">"
+          "<div class=\"progress\" data-metric=\"v.e.throttle\" data-prec=\"0\">"
+            "<div id=\"pb-throttle\" class=\"progress-bar progress-bar-success no-transition text-left\" role=\"progressbar\""
+              " aria-valuenow=\"0\" aria-valuemin=\"0\" aria-valuemax=\"100\" style=\"width:0%\">"
+              "<div><span class=\"label hidden visible-xs-inline\">Throttle:&nbsp;</span><span class=\"value\">0</span><span class=\"unit\">%</span></div>"
+            "</div>"
+          "</div>"
+        "</div>"
+      "</div>"
+    "</div>");
+  
   c.print(
     "<div id=\"loadmenu\" class=\"center-block\"><ul class=\"list-inline\">");
   for (int prof=0; prof<=3; prof++) {
@@ -389,6 +411,361 @@ void OvmsVehicleRenaultTwizy::WebConsole(PageEntry_t& p, PageContext_t& c)
   }
   c.print(
     "</ul></div>");
+  
   c.panel_end();
+  
+  c.print(
+    "<script>"
+    "$(\".receiver\").on(\"msg:metrics\", function(e, update){"
+      "$(this).find(\"[data-metric]\").each(function(){"
+        "var el = $(this), metric = el.data(\"metric\"), prec = el.data(\"prec\");"
+        "if (el.hasClass(\"progress\")) {"
+          "var pb = $(this.firstElementChild), min = pb.attr(\"aria-valuemin\"), max = pb.attr(\"aria-valuemax\");"
+          "var vp = (metrics[metric]-min) / (max-min) * 100;"
+          "var vf = (prec != undefined) ? Number(metrics[metric]).toFixed(prec) : metrics[metric];"
+          "pb.css(\"width\", vp+\"%\").attr(\"aria-valuenow\", vp);"
+          "pb.find(\".value\").text(vf);"
+        "} else {"
+          "el.text(metrics[metric]);"
+        "}"
+      "});"
+    "}).trigger(\"msg:metrics\");"
+    "$(\"#livestatus\").on(\"msg:event\", function(e, event){"
+      "if (event == \"vehicle.kickdown.engaged\")"
+        "$(\"#pb-throttle\").removeClass(\"progress-bar-success progress-bar-warning\").addClass(\"progress-bar-danger\");"
+      "else if (event == \"vehicle.kickdown.releasing\")"
+        "$(\"#pb-throttle\").removeClass(\"progress-bar-success progress-bar-danger\").addClass(\"progress-bar-warning\");"
+      "else if (event == \"vehicle.kickdown.released\")"
+        "$(\"#pb-throttle\").removeClass(\"progress-bar-warning progress-bar-danger\").addClass(\"progress-bar-success\");"
+    "});"
+    "</script>");
+  
   c.done();
+}
+
+
+/**
+ * WebBattMon: (/xrt/battmon)
+ */
+void OvmsVehicleRenaultTwizy::WebBattMon(PageEntry_t& p, PageContext_t& c)
+{
+  c.head(200);
+  c.print(
+    "<div class=\"panel panel-primary panel-single\">"
+    "<div class=\"panel-heading\">Twizy Battery Monitor</div>"
+    "<div class=\"panel-body\">"
+      "<div class=\"receiver\" id=\"livestatus\">"
+        "<div id=\"cellvolts\" style=\"width: 100%; max-width: 800px; height: 45vh; min-height: 265px; margin: 0 auto\"></div>"
+        "<div id=\"celltemps\" style=\"width: 100%; max-width: 800px; height: 25vh; min-height: 145px; margin: 0 auto\"></div>"
+      "</div>"
+    "</div>"
+    "<div class=\"panel-footer\">"
+      "<button class=\"btn btn-default\" data-cmd=\"xrt batt reset\" data-target=\"#output\">Reset min/max</button>"
+      "<samp id=\"output\" class=\"samp-inline\"></samp>"
+    "</div>"
+    "</div>"
+    ""
+    "<style>"
+    ""
+    "#cellvolts .highcharts-boxplot-box {"
+      "fill: #90e8a3;"
+      "fill-opacity: 0.6;"
+      "stroke: #90e8a3;"
+      "stroke-opacity: 0.6;"
+    "}"
+    ".night #cellvolts .highcharts-boxplot-box {"
+      "fill-opacity: 0.4;"
+    "}"
+    ""
+    "#cellvolts .highcharts-boxplot-median {"
+      "stroke: #193e07;"
+      "stroke-width: 5px;"
+      "stroke-linecap: round;"
+    "}"
+    ".night #cellvolts .highcharts-boxplot-median {"
+      "stroke: #afff45;"
+    "}"
+    ""
+    "#cellvolts .highcharts-plot-line {"
+      "fill: none;"
+      "stroke: #3625c3;"
+      "stroke-width: 1px;"
+      "stroke-dasharray: 5;"
+    "}"
+    ".night #cellvolts .highcharts-plot-line {"
+      "stroke: #728def;"
+    "}"
+    ""
+    "#celltemps .highcharts-boxplot-box {"
+      "fill: #eabe85;"
+      "fill-opacity: 0.6;"
+      "stroke: #eabe85;"
+      "stroke-opacity: 0.6;"
+    "}"
+    ".night #celltemps .highcharts-boxplot-box {"
+      "fill-opacity: 0.4;"
+    "}"
+    ""
+    "#celltemps .highcharts-boxplot-median {"
+      "stroke: #7d1313;"
+      "stroke-width: 5px;"
+      "stroke-linecap: round;"
+    "}"
+    ".night #celltemps .highcharts-boxplot-median {"
+      "stroke: #fdd02e;"
+    "}"
+    ""
+    "#celltemps .highcharts-plot-line {"
+      "fill: none;"
+      "stroke: #3625c3;"
+      "stroke-width: 1px;"
+      "stroke-dasharray: 5;"
+    "}"
+    ".night #celltemps .highcharts-plot-line {"
+      "stroke: #728def;"
+    "}"
+    ""
+    "</style>"
+    ""
+    "<script type=\"text/javascript\">"
+    ""
+    "var cellvolts;"
+    ""
+    "function get_cell_data() {"
+      "var data = { cells: [], volts: [], vdevs: [], voltmean: 0 };"
+      "var i, sum=0, act, min, max, base;"
+      "for (i=0; i<metrics[\"xrt.b.cell.cnt\"]; i++) {"
+        "base = \"xrt.b.cell.\" + ((i<9) ? \"0\"+(i+1) : (i+1)) + \".volt.\";"
+        "act = metrics[base+\"act\"];"
+        "min = metrics[base+\"min\"];"
+        "max = metrics[base+\"max\"];"
+        "sum += act;"
+        "data.cells.push(i+1);"
+        "data.volts.push([min,min,act,max,max]);"
+        "data.vdevs.push(metrics[base+\"maxdev\"]);"
+      "}"
+      "data.voltmean = sum / metrics[\"xrt.b.cell.cnt\"];"
+      "return data;"
+    "}"
+    ""
+    "function update_cell_chart() {"
+      "var data = get_cell_data();"
+      "cellvolts.xAxis[0].setCategories(data.cells);"
+      "cellvolts.yAxis[0].removePlotLine('plot-line-mean');"
+      "cellvolts.yAxis[0].addPlotLine({ id: 'plot-line-mean', value: data.voltmean });"
+      "cellvolts.series[0].setData(data.volts);"
+    "}"
+    ""
+    "function init_cellvolts() {"
+      "var data = get_cell_data();"
+      "cellvolts = Highcharts.chart('cellvolts', {"
+        "chart: {"
+          "type: 'boxplot',"
+          "events: {"
+            "load: function () {"
+              "$('#livestatus').on(\"msg:metrics\", function(e, update){"
+                "if (/xrt\\.b\\.cell/.test(Object.keys(update).join()))"
+                  "update_cell_chart();"
+              "});"
+            "}"
+          "},"
+          "zoomType: 'y',"
+          "panning: true,"
+          "panKey: 'ctrl',"
+        "},"
+        "title: { text: null },"
+        "credits: { enabled: false },"
+        "legend: { enabled: false },"
+        "xAxis: { categories: data.cells },"
+        "yAxis: {"
+          "title: { text: null },"
+          "labels: { format: \"{value:.2f}V\" },"
+          "minTickInterval: 0.01,"
+          "plotLines: [{ id: 'plot-line-mean', value: data.voltmean }],"
+          "minorTickInterval: 'auto',"
+        "},"
+        "series: [{"
+          "name: 'Voltage',"
+          "data: data.volts,"
+          "tooltip: {"
+            "headerFormat: '<em>Cell #{point.key}</em><br/>',"
+            "pointFormat: ''"
+              "+ '● <b>Act: {point.median:.3f}V</b><br/>'"
+              "+ '▲ Max: {point.high:.3f}V<br/>'"
+              "+ '▼ Min: {point.low:.3f}V<br/>'"
+          "},"
+          "whiskerLength: 0,"
+          "animation: {"
+            "duration: 300,"
+            "easing: 'easeOutExpo'"
+          "},"
+        "}]"
+      "});"
+    "}"
+    ""
+    ""
+    "var celltemps;"
+    ""
+    "function get_cmod_data() {"
+      "var data = { cmods: [], temps: [], tdevs: [], tempmean: 0 };"
+      "var i, sum=0, act, min, max, base;"
+      "for (i=0; i<metrics[\"xrt.b.cmod.cnt\"]; i++) {"
+        "base = \"xrt.b.cmod.\" + ((i<9) ? \"0\"+(i+1) : (i+1)) + \".temp.\";"
+        "act = metrics[base+\"act\"];"
+        "min = metrics[base+\"min\"];"
+        "max = metrics[base+\"max\"];"
+        "sum += act;"
+        "data.cmods.push(i+1);"
+        "data.temps.push([min,min,act,max,max]);"
+        "data.tdevs.push(metrics[base+\"maxdev\"]);"
+      "}"
+      "data.tempmean = sum / metrics[\"xrt.b.cmod.cnt\"];"
+      "return data;"
+    "}"
+    ""
+    "function update_cmod_chart() {"
+      "var data = get_cmod_data();"
+      "celltemps.xAxis[0].setCategories(data.cmods);"
+      "celltemps.yAxis[0].removePlotLine('plot-line-mean');"
+      "celltemps.yAxis[0].addPlotLine({ id: 'plot-line-mean', value: data.tempmean });"
+      "celltemps.series[0].setData(data.temps);"
+    "}"
+    ""
+    "function init_celltemps() {"
+      "var data = get_cmod_data();"
+      "celltemps = Highcharts.chart('celltemps', {"
+        "chart: {"
+          "type: 'boxplot',"
+          "events: {"
+            "load: function () {"
+              "$('#livestatus').on(\"msg:metrics\", function(e, update){"
+                "if (/xrt\\.b\\.cmod/.test(Object.keys(update).join()))"
+                  "update_cmod_chart();"
+              "});"
+            "}"
+          "},"
+          "zoomType: 'y',"
+          "panning: true,"
+          "panKey: 'ctrl',"
+        "},"
+        "title: { text: null },"
+        "credits: { enabled: false },"
+        "legend: { enabled: false },"
+        "xAxis: { categories: data.cmods },"
+        "yAxis: {"
+          "title: { text: null },"
+          "labels: { format: \"{value:.0f} °C\" },"
+          "minTickInterval: 1,"
+          "plotLines: [{ id: 'plot-line-mean', value: data.tempmean }],"
+          "minorTickInterval: 'auto',"
+        "},"
+        "series: [{"
+          "name: 'Temperature',"
+          "data: data.temps,"
+          "tooltip: {"
+            "headerFormat: '<em>Module #{point.key}</em><br/>',"
+            "pointFormat: ''"
+              "+ '● <b>Act: {point.median:.0f}°C</b><br/>'"
+              "+ '▲ Max: {point.high:.0f}°C<br/>'"
+              "+ '▼ Min: {point.low:.0f}°C<br/>'"
+          "},"
+          "whiskerLength: 0,"
+          "animation: {"
+            "duration: 300,"
+            "easing: 'easeOutExpo'"
+          "},"
+        "}]"
+      "});"
+    "}"
+    ""
+    ""
+    "function init_charts() {"
+      "init_cellvolts();"
+      "init_celltemps();"
+    "}"
+    ""
+    "if (window.Highcharts) {"
+      "init_charts();"
+    "} else {"
+      "$.ajax({"
+        "url: \"/assets/charts.js\","
+        "dataType: \"script\","
+        "cache: true,"
+        "success: function(){ init_charts(); }"
+      "});"
+    "}"
+    ""
+    "</script>");
+  c.done();
+}
+
+
+/**
+ * GetDashboardConfig: Twizy specific dashboard setup
+ */
+void OvmsVehicleRenaultTwizy::GetDashboardConfig(DashboardConfig& cfg)
+{
+  cfg.gaugeset1 = 
+    "yAxis: [{"
+      // Speed:
+      "min: 0, max: 120,"
+      "plotBands: ["
+        "{ from: 0, to: 70, className: 'green-band' },"
+        "{ from: 70, to: 100, className: 'yellow-band' },"
+        "{ from: 100, to: 120, className: 'red-band' }]"
+    "},{"
+      // Voltage:
+      "min: 45, max: 60,"
+      "plotBands: ["
+        "{ from: 45, to: 47.5, className: 'red-band' },"
+        "{ from: 47.5, to: 50, className: 'yellow-band' },"
+        "{ from: 50, to: 100, className: 'green-band' }]"
+    "},{"
+      // SOC:
+      "min: 0, max: 100,"
+      "plotBands: ["
+        "{ from: 0, to: 12.5, className: 'red-band' },"
+        "{ from: 12.5, to: 25, className: 'yellow-band' },"
+        "{ from: 25, to: 100, className: 'green-band' }]"
+    "},{"
+      // Efficiency:
+      "min: 0, max: 300,"
+      "plotBands: ["
+        "{ from: 0, to: 150, className: 'green-band' },"
+        "{ from: 150, to: 250, className: 'yellow-band' },"
+        "{ from: 250, to: 300, className: 'red-band' }]"
+    "},{"
+      // Power:
+      "min: -10, max: 30,"
+      "plotBands: ["
+        "{ from: -10, to: 0, className: 'violet-band' },"
+        "{ from: 0, to: 15, className: 'green-band' },"
+        "{ from: 15, to: 25, className: 'yellow-band' },"
+        "{ from: 25, to: 30, className: 'red-band' }]"
+    "},{"
+      // Charger temperature:
+      "min: 20, max: 80, tickInterval: 20,"
+      "plotBands: ["
+        "{ from: 20, to: 65, className: 'normal-band border' },"
+        "{ from: 65, to: 80, className: 'red-band border' }]"
+    "},{"
+      // Battery temperature:
+      "min: -15, max: 65, tickInterval: 25,"
+      "plotBands: ["
+        "{ from: -15, to: 0, className: 'red-band border' },"
+        "{ from: 0, to: 50, className: 'normal-band border' },"
+        "{ from: 50, to: 65, className: 'red-band border' }]"
+    "},{"
+      // Inverter temperature:
+      "min: 20, max: 80, tickInterval: 20,"
+      "plotBands: ["
+        "{ from: 20, to: 70, className: 'normal-band border' },"
+        "{ from: 70, to: 80, className: 'red-band border' }]"
+    "},{"
+      // Motor temperature:
+      "min: 50, max: 125, tickInterval: 25,"
+      "plotBands: ["
+        "{ from: 50, to: 110, className: 'normal-band border' },"
+        "{ from: 110, to: 125, className: 'red-band border' }]"
+    "}]";
 }

@@ -198,7 +198,8 @@ void GsmMux::Start()
   m_channels.insert(m_channels.end(),new GsmMuxChannel(this,0,8));
   for (int k=1; k<=GSM_MUX_CHANNELS; k++)
     {
-    m_channels.insert(m_channels.end(),new GsmMuxChannel(this,k,1024));
+    m_channels.insert(m_channels.end(),
+      new GsmMuxChannel(this,k,(k==GSM_MUX_CHAN_DATA)?2048:512));
     }
   StartChannel(0);
   m_state = DlciOpening;
@@ -207,7 +208,7 @@ void GsmMux::Start()
 void GsmMux::Stop()
   {
   ESP_LOGI(TAG, "Stop MUX");
-  for (int k=1; k<=GSM_MUX_CHANNELS; k++)
+  for (int k=0; k<m_channels.size(); k++)
     {
     GsmMuxChannel* chan = m_channels[k];
     if (chan) delete chan;

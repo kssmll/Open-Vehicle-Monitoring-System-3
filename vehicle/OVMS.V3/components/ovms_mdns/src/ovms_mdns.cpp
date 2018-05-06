@@ -31,28 +31,35 @@
 #include "ovms_log.h"
 static const char *TAG = "ovms-mdns";
 
+#include "ovms_netmanager.h"
 #include "ovms_peripherals.h"
 #include "ovms_config.h"
 #include "ovms_mdns.h"
 
 OvmsMDNS MyMDNS __attribute__ ((init_priority (8100)));
 
-void OvmsMDNS::WifiUp(std::string event, void* data)
+void OvmsMDNS::SystemEvent(std::string event, void* data)
   {
-  ESP_LOGI(TAG, "Launching MDNS service");
-  esp_err_t err;
-  if (MyPeripherals->m_esp32wifi->GetMode() == ESP32WIFI_MODE_CLIENT)
-    {
-    err = mdns_init();
-    }
-  else if (MyPeripherals->m_esp32wifi->GetMode() == ESP32WIFI_MODE_AP)
-    {
-    err = mdns_init();
-    }
-  else
-    {
-    return; // wifi is not up in AP or STA mode
-    }
+  system_event_t *ev = (system_event_t *)data;
+  if (m_mdns) mdns_handle_system_event(NULL, ev);
+  }
+
+void OvmsMDNS::SystemStart(std::string event, void* data)
+  {
+  ESP_LOGI(TAG, "Starting MDNS");
+  StartMDNS();
+  }
+
+void OvmsMDNS::EventSystemShuttingDown(std::string event, void* data)
+  {
+  StopMDNS();
+  }
+
+void OvmsMDNS::StartMDNS()
+  {
+  if (m_mdns) return; // Quick exit if already started
+
+  esp_err_t err = mdns_init();
   if (err)
     {
     ESP_LOGE(TAG, "MDNS Init failed: %d", err);
@@ -67,20 +74,20 @@ void OvmsMDNS::WifiUp(std::string event, void* data)
   mdns_hostname_set(vehicleid.c_str());
 
   // Set default instance
-  std::string instance("Open Vehicle Monitoring System - ");
+  std::string instance("OVMS - ");
   instance.append(vehicleid);
   mdns_instance_name_set(instance.c_str());
 
   // Register services
   mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+  mdns_service_add(NULL, "_ssh", "_tcp", 22, NULL, 0);
   mdns_service_add(NULL, "_telnet", "_tcp", 23, NULL, 0);
   }
 
-void OvmsMDNS::WifiDown(std::string event, void* data)
+void OvmsMDNS::StopMDNS()
   {
   if (m_mdns)
     {
-    ESP_LOGI(TAG, "Stopping MDNS service");
     mdns_free();
     m_mdns = false;
     }
@@ -94,12 +101,12 @@ OvmsMDNS::OvmsMDNS()
 
   using std::placeholders::_1;
   using std::placeholders::_2;
-  MyEvents.RegisterEvent(TAG,"network.wifi.up", std::bind(&OvmsMDNS::WifiUp, this, _1, _2));
-  MyEvents.RegisterEvent(TAG,"network.wifi.down", std::bind(&OvmsMDNS::WifiDown, this, _1, _2));
+  MyEvents.RegisterEvent(TAG,"system.event", std::bind(&OvmsMDNS::SystemEvent, this, _1, _2));
+  MyEvents.RegisterEvent(TAG,"system.start", std::bind(&OvmsMDNS::SystemStart, this, _1, _2));
+  MyEvents.RegisterEvent(TAG,"system.shuttingdown",std::bind(&OvmsMDNS::EventSystemShuttingDown, this, _1, _2));
   }
 
 OvmsMDNS::~OvmsMDNS()
   {
+  StopMDNS();
   }
-
-

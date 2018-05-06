@@ -90,6 +90,10 @@ void config_list(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, 
           { writer->printf("  %s\n",it->first.c_str()); }
         }
       }
+    else
+      {
+      writer->printf("%s not found\n", argv[0]);
+      }
     }
   }
 
@@ -111,6 +115,7 @@ void config_set(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, c
     }
 
   p->SetValue(argv[1],argv[2]);
+  writer->puts("Parameter has been set.");
   }
 
 void config_rm(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, const char* const* argv)
@@ -131,10 +136,14 @@ void config_rm(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, co
     }
 
   if (p->DeleteInstance(argv[1]))
+    {
+    writer->printf("Instance %s has been removed.\n", argv[1]);
     return;
+    }
   if (strcmp(argv[1], "*") != 0)
     return;
   MyConfig.DeregisterParam(argv[0]);
+  writer->printf("Parameter %s has been removed.\n", argv[0]);
   }
 
 OvmsConfig::OvmsConfig()
@@ -151,6 +160,7 @@ OvmsConfig::OvmsConfig()
   cmd_config->RegisterCommand("rm","Remove parameter:instance",config_rm,"<param> {<instance> | *}",2,2,true);
 
   RegisterParam("password", "Password store", true, false);
+  RegisterParam("module", "Module configuration", true, true);
   }
 
 OvmsConfig::~OvmsConfig()
@@ -196,10 +206,13 @@ esp_err_t OvmsConfig::mount()
     }
   closedir(dir);
 
+  // load & upgrade params:
   for (ConfigMap::iterator it=MyConfig.m_map.begin(); it!=MyConfig.m_map.end(); ++it)
     {
     it->second->Load();
     }
+  upgrade();
+
   MyEvents.SignalEvent("config.mounted", NULL);
   return ESP_OK;
   }
@@ -222,6 +235,16 @@ esp_err_t OvmsConfig::unmount()
 bool OvmsConfig::ismounted()
   {
   return m_mounted;
+  }
+
+void OvmsConfig::upgrade()
+  {
+  // Migrate password/changed → module/init:
+  if (GetParamValueBool("password", "changed") == true)
+    {
+    SetParamValue("module", "init", "done");
+    DeleteInstance("password", "changed");
+    }
   }
 
 void OvmsConfig::RegisterParam(std::string name, std::string title, bool writable, bool readable)
@@ -573,5 +596,9 @@ void OvmsConfigParam::Load()
 
 void OvmsConfigParam::Save()
   {
-  if (m_name != "") RewriteConfig();
+  if (m_name != "")
+    {
+    RewriteConfig();
+    MyEvents.SignalEvent("config.changed", this);
+    }
   }

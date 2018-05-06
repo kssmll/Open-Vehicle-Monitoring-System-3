@@ -27,16 +27,21 @@
 */
 
 #include "ovms_log.h"
-static const char *TAG = "webserver";
+// static const char *TAG = "webserver";
 
 #include <string.h>
 #include <stdio.h>
+#include <string>
+#include <sstream>
+#include <dirent.h>
 #include "ovms_webserver.h"
 #include "ovms_config.h"
 #include "ovms_metrics.h"
 #include "metrics_standard.h"
 #include "vehicle.h"
 #include "ovms_housekeeping.h"
+#include "ovms_ota.h"
+#include "ovms_peripherals.h"
 
 #define _attr(text) (c.encode_html(text).c_str())
 #define _html(text) (c.encode_html(text).c_str())
@@ -48,9 +53,9 @@ static const char *TAG = "webserver";
 void OvmsWebServer::HandleStatus(PageEntry_t& p, PageContext_t& c)
 {
   std::string cmd, output;
-  
+
   c.head(200);
-  
+
   if ((cmd = c.getvar("cmd")) != "") {
     output = ExecuteCommand(cmd);
     output =
@@ -58,12 +63,12 @@ void OvmsWebServer::HandleStatus(PageEntry_t& p, PageContext_t& c)
       "<p><a class=\"btn btn-default\" target=\"#main\" href=\"/status\">Reload status</a></p>";
     c.alert("info", output.c_str());
   }
-  
+
   c.print(
     "<div id=\"livestatus\" class=\"receiver\">"
     "<div class=\"row\">"
     "<div class=\"col-md-6\">");
-  
+
   c.panel_start("primary", "Live");
   c.print(
     "<div class=\"table-responsive\">"
@@ -110,22 +115,23 @@ void OvmsWebServer::HandleStatus(PageEntry_t& p, PageContext_t& c)
     "</div>"
     );
   c.panel_end();
-  
+
   c.print(
     "</div>"
     "<div class=\"col-md-6\">");
-  
+
   c.panel_start("primary", "Vehicle");
   output = ExecuteCommand("stat");
-  c.printf("<samp class=\"monitor\" id=\"vehicle-status\" data-updcmd=\"stat\">%s</samp>", _html(output));
+  c.printf("<samp class=\"monitor\" id=\"vehicle-status\" data-updcmd=\"stat\" data-events=\"vehicle.charge\">%s</samp>", _html(output));
   output = ExecuteCommand("location status");
-  c.printf("<samp>%s</samp>", _html(output));
+  c.printf("<samp class=\"monitor\" data-updcmd=\"location status\" data-events=\"gps.lock|location\">%s</samp>", _html(output));
   c.panel_end(
     "<ul class=\"list-inline\">"
-      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#vehicle-status\" data-cmd=\"charge start\">Start charge</button></li>"
-      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#vehicle-status\" data-cmd=\"charge stop\">Stop charge</button></li>"
+      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#vehicle-cmdres\" data-cmd=\"charge start\">Start charge</button></li>"
+      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#vehicle-cmdres\" data-cmd=\"charge stop\">Stop charge</button></li>"
+      "<li><samp id=\"vehicle-cmdres\" class=\"samp-inline\"></samp></li>"
     "</ul>");
-  
+
   c.print(
     "</div>"
     "</div>"
@@ -135,47 +141,51 @@ void OvmsWebServer::HandleStatus(PageEntry_t& p, PageContext_t& c)
   c.panel_start("primary", "Server");
   output = ExecuteCommand("server v2 status");
   if (!startsWith(output, "Unrecognised"))
-    c.printf("<samp class=\"monitor\" id=\"server-v2\" data-updcmd=\"server v2 status\">%s</samp>", _html(output));
+    c.printf("<samp class=\"monitor\" id=\"server-v2\" data-updcmd=\"server v2 status\" data-events=\"server.v2\">%s</samp>", _html(output));
   output = ExecuteCommand("server v3 status");
   if (!startsWith(output, "Unrecognised"))
-    c.printf("<samp class=\"monitor\" id=\"server-v3\" data-updcmd=\"server v3 status\">%s</samp>", _html(output));
+    c.printf("<samp class=\"monitor\" id=\"server-v3\" data-updcmd=\"server v3 status\" data-events=\"server.v3\">%s</samp>", _html(output));
   c.panel_end(
     "<ul class=\"list-inline\">"
-      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-v2\" data-cmd=\"server v2 start\">Start V2</button></li>"
-      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-v2\" data-cmd=\"server v2 stop\">Stop V2</button></li>"
-      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-v3\" data-cmd=\"server v3 start\">Start V3</button></li>"
-      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-v3\" data-cmd=\"server v3 stop\">Stop V3</button></li>"
+      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-cmdres\" data-cmd=\"server v2 start\">Start V2</button></li>"
+      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-cmdres\" data-cmd=\"server v2 stop\">Stop V2</button></li>"
+      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-cmdres\" data-cmd=\"server v3 start\">Start V3</button></li>"
+      "<li><button type=\"button\" class=\"btn btn-default btn-sm\" data-target=\"#server-cmdres\" data-cmd=\"server v3 stop\">Stop V3</button></li>"
+      "<li><samp id=\"server-cmdres\" class=\"samp-inline\"></samp></li>"
     "</ul>");
-  
+
   c.print(
     "</div>"
     "<div class=\"col-md-6\">");
-  
+
   c.panel_start("primary", "Wifi");
   output = ExecuteCommand("wifi status");
-  c.printf("<samp>%s</samp>", _html(output));
+  c.printf("<samp class=\"monitor\" data-updcmd=\"wifi status\" data-events=\"^system.wifi\">%s</samp>", _html(output));
   c.panel_end();
-  
+
   c.print(
     "</div>"
     "</div>"
     "<div class=\"row\">"
     "<div class=\"col-md-6\">");
-  
-  c.panel_start("primary", "Modem");
-  output = ExecuteCommand("simcom status");
-  c.printf("<samp>%s</samp>", _html(output));
+
+  c.panel_start("primary", "Network");
+  output = ExecuteCommand("network status");
+  c.printf("<samp class=\"monitor\" data-updcmd=\"network status\" data-events=\"^network\">%s</samp>", _html(output));
   c.panel_end();
-  
+
   c.print(
     "</div>"
     "<div class=\"col-md-6\">");
-  
-  c.panel_start("primary", "Firmware");
-  output = ExecuteCommand("ota status");
+
+  c.panel_start("primary", "Module");
+  output = ExecuteCommand("boot status");
+  c.printf("<samp>%s</samp>", _html(output));
+  c.print("<hr>");
+  output = ExecuteCommand("ota status nocheck");
   c.printf("<samp>%s</samp>", _html(output));
   c.panel_end();
-  
+
   c.print(
     "</div>"
     "</div>"
@@ -197,35 +207,28 @@ void OvmsWebServer::HandleStatus(PageEntry_t& p, PageContext_t& c)
     "});"
     "</script>"
     );
-  
+
   c.done();
 }
 
 
 /**
- * HandleCommand: execute command, send output
- *  Default: plain text
- *  HTML encoded with parameter encode=html
+ * HandleCommand: execute command, stream output
  */
 void OvmsWebServer::HandleCommand(PageEntry_t& p, PageContext_t& c)
 {
   std::string command = c.getvar("command");
-  ESP_LOGI(TAG, "HandleCommand: %d bytes free, executing: %s",
-    heap_caps_get_free_size(MALLOC_CAP_8BIT), command.c_str());
-  
-  std::string* output;
-  if (c.getvar("encode") == "html")
-    output = new std::string(c.encode_html(ExecuteCommand(command)));
-  else
-    output = new std::string(ExecuteCommand(command));
-  
-  ESP_LOGD(TAG, "HandleCommand: %d bytes free, output size: %d bytes",
-    heap_caps_get_free_size(MALLOC_CAP_8BIT), output->size());
-  
+
+  // Note: application/octet-stream instead of text/plain is a workaround for an *old*
+  //  Chrome/Webkit bug: chunked text/plain is always buffered for the first 1024 bytes
   c.head(200,
-    "Content-Type: text/html; charset=utf-8\r\n"
+    "Content-Type: application/octet-stream; charset=utf-8\r\n"
     "Cache-Control: no-cache");
-  new HttpStringSender(c.nc, output);
+  
+  if (command.empty())
+    c.done();
+  else
+    new HttpCommandStream(c.nc, command);
 }
 
 
@@ -236,64 +239,114 @@ void OvmsWebServer::HandleShell(PageEntry_t& p, PageContext_t& c)
 {
   std::string command = c.getvar("command");
   std::string output;
-  
+
   if (command != "")
     output = ExecuteCommand(command);
 
   // generate form:
   c.head(200);
-  c.panel_start("primary", "Shell");
-  
+  c.panel_start("primary panel-single", "Shell");
+
   c.printf(
     "<pre class=\"get-window-resize\" id=\"output\">%s</pre>"
     "<form id=\"shellform\" method=\"post\" action=\"#\">"
       "<div class=\"input-group\">"
-        "<label class=\"input-group-addon hidden-xs\" for=\"input-command\">OVMS&nbsp;&gt;&nbsp;</label>"
-        "<input type=\"text\" class=\"form-control font-monospace\" placeholder=\"Enter command\" name=\"command\" id=\"input-command\" value=\"%s\" autocomplete=\"section-shell\">"
+        "<label class=\"input-group-addon hidden-xs\" for=\"input-command\">OVMS#</label>"
+        "<input type=\"text\" class=\"form-control font-monospace\" placeholder=\"Enter command\" name=\"command\" id=\"input-command\" value=\"%s\" autocapitalize=\"none\" autocorrect=\"off\" autocomplete=\"section-shell\" spellcheck=\"false\">"
         "<div class=\"input-group-btn\">"
           "<button type=\"submit\" class=\"btn btn-default\">Execute</button>"
         "</div>"
       "</div>"
     "</form>"
     , _html(output.c_str()), _attr(command.c_str()));
-  
+
   c.print(
+    "<style>"
+    ".fullscreened #output {"
+      "border: 0 none;"
+    "}"
+    "@media (max-width: 767px) {"
+      "#output {"
+        "border: 0 none;"
+      "}"
+    "}"
+    "</style>"
     "<script>"
-    "$(\"#output\").on(\"window-resize\", function(event){"
-      "$(\"#output\").height($(window).height()-220);"
+    "$(window).on(\"resize\", function(){"
+      "var pad = Number.parseInt($(\"#output\").parent().css(\"padding-top\")) + Number.parseInt($(\"#output\").parent().css(\"padding-bottom\"));"
+      "$(\"#output\").height($(window).height() - $(\"#output\").offset().top - pad - 73);"
       "$(\"#output\").scrollTop($(\"#output\").get(0).scrollHeight);"
-    "}).trigger(\"window-resize\");"
+    "}).trigger(\"resize\");"
     "$(\"#shellform\").on(\"submit\", function(event){"
-      "var data = $(this).serialize();"
-      "var command = $(\"#input-command\").val();"
-      "var output = $(\"#output\");"
-      "$.ajax({ \"type\": \"post\", \"url\": \"/api/execute\", \"data\": data,"
-        "\"timeout\": 5000,"
-        "\"beforeSend\": function(){"
-          "$(\"html\").addClass(\"loading\");"
-          "output.html(output.html() + \"<strong>OVMS&nbsp;&gt;&nbsp;</strong><kbd>\""
-            "+ $(\"<div/>\").text(command).html() + \"</kbd><br>\");"
-          "output.scrollTop(output.get(0).scrollHeight);"
-        "},"
-        "\"complete\": function(){"
-          "$(\"html\").removeClass(\"loading\");"
-        "},"
-        "\"success\": function(response){"
-          "output.html(output.html() + $(\"<div/>\").text(response).html());"
-          "output.scrollTop(output.get(0).scrollHeight);"
-        "},"
-        "\"error\": function(response, status, httperror){"
-          "var resptext = response.responseText || httperror || status;"
-          "output.html(output.html() + $(\"<div/>\").text(resptext).html());"
-          "output.scrollTop(output.get(0).scrollHeight);"
-        "},"
-      "});"
+      "if (!$(\"html\").hasClass(\"loading\")) {"
+        "var data = $(this).serialize();"
+        "var command = $(\"#input-command\").val();"
+        "var output = $(\"#output\");"
+        "var lastlen = 0, xhr, timeouthd, timeout = 20;"
+        "if (/^(test |ota |co .* scan)/.test(command)) timeout = 60;"
+        "var checkabort = function(){ if (xhr.readyState != 4) xhr.abort(\"timeout\"); };"
+        "xhr = $.ajax({ \"type\": \"post\", \"url\": \"/api/execute\", \"data\": data,"
+          "\"timeout\": 0,"
+          "\"beforeSend\": function(){"
+            "$(\"html\").addClass(\"loading\");"
+            "output.html(output.html() + \"<strong>OVMS#</strong>&nbsp;<kbd>\""
+              "+ $(\"<div/>\").text(command).html() + \"</kbd><br>\");"
+            "output.scrollTop(output.get(0).scrollHeight);"
+            "timeouthd = window.setTimeout(checkabort, timeout*1000);"
+          "},"
+          "\"complete\": function(){"
+            "window.clearTimeout(timeouthd);"
+            "$(\"html\").removeClass(\"loading\");"
+          "},"
+          "\"xhrFields\": {"
+            "onprogress: function(e){"
+              "var response = e.currentTarget.response;"
+              "var addtext = response.substring(lastlen);"
+              "lastlen = response.length;"
+              "output.html(output.html() + $(\"<div/>\").text(addtext).html());"
+              "output.scrollTop(output.get(0).scrollHeight);"
+              "window.clearTimeout(timeouthd);"
+              "timeouthd = window.setTimeout(checkabort, timeout*1000);"
+            "},"
+          "},"
+          "\"error\": function(response, status, httperror){"
+            "var resptext = response.responseText || httperror+\"\\n\" || status+\"\\n\";"
+            "output.html(output.html() + $(\"<div/>\").text(resptext).html());"
+            "output.scrollTop(output.get(0).scrollHeight);"
+          "},"
+        "});"
+        "if (shellhist.indexOf(command) >= 0)"
+          "shellhist.splice(shellhist.indexOf(command), 1);"
+        "shellhpos = shellhist.push(command) - 1;"
+      "}"
       "event.stopPropagation();"
       "return false;"
     "});"
+    "$(\"#input-command\").on(\"keydown\", function(ev){"
+      "if (ev.key == \"ArrowUp\") {"
+        "shellhpos = (shellhist.length + shellhpos - 1) % shellhist.length;"
+        "$(this).val(shellhist[shellhpos]);"
+        "return false;"
+      "}"
+      "else if (ev.key == \"ArrowDown\") {"
+        "shellhpos = (shellhist.length + shellhpos + 1) % shellhist.length;"
+        "$(this).val(shellhist[shellhpos]);"
+        "return false;"
+      "}"
+      "else if (ev.key == \"PageUp\") {"
+        "var o = $(\"#output\");"
+        "o.scrollTop(o.scrollTop() - o.height());"
+        "return false;"
+      "}"
+      "else if (ev.key == \"PageDown\") {"
+        "var o = $(\"#output\");"
+        "o.scrollTop(o.scrollTop() + o.height());"
+        "return false;"
+      "}"
+    "});"
     "$(\"#input-command\").focus();"
     "</script>");
-  
+
   c.panel_end();
   c.done();
 }
@@ -302,36 +355,45 @@ void OvmsWebServer::HandleShell(PageEntry_t& p, PageContext_t& c)
 /**
  * HandleCfgPassword: change admin password
  */
+
 void OvmsWebServer::HandleCfgPassword(PageEntry_t& p, PageContext_t& c)
 {
   std::string error, info;
   std::string oldpass, newpass1, newpass2;
-  
+
   if (c.method == "POST") {
     // process form submission:
     oldpass = c.getvar("oldpass");
     newpass1 = c.getvar("newpass1");
     newpass2 = c.getvar("newpass2");
-    
+
     if (oldpass != MyConfig.GetParamValue("password", "module"))
       error += "<li data-input=\"oldpass\">Old password is not correct</li>";
-    if (newpass1 == "")
-      error += "<li data-input=\"newpass1\">New password may not be empty</li>";
+    if (newpass1 == oldpass)
+      error += "<li data-input=\"newpass1\">New password identical to old password</li>";
+    if (newpass1.length() < 8)
+      error += "<li data-input=\"newpass1\">New password must have at least 8 characters</li>";
     if (newpass2 != newpass1)
       error += "<li data-input=\"newpass2\">Passwords do not match</li>";
-    
+
     if (error == "") {
       // success:
+      if (MyConfig.GetParamValue("password", "module") == MyConfig.GetParamValue("wifi.ap", "OVMS")) {
+        MyConfig.SetParamValue("wifi.ap", "OVMS", newpass1);
+        info += "<li>New Wifi AP password for network <code>OVMS</code> has been set.</li>";
+      }
+      
       MyConfig.SetParamValue("password", "module", newpass1);
       info += "<li>New module &amp; admin password has been set.</li>";
       
       info = "<p class=\"lead\">Success!</p><ul class=\"infolist\">" + info + "</ul>";
       c.head(200);
       c.alert("success", info.c_str());
+      OutputHome(p, c);
       c.done();
       return;
     }
-    
+
     // output error, return to form:
     error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
     c.head(400);
@@ -341,15 +403,41 @@ void OvmsWebServer::HandleCfgPassword(PageEntry_t& p, PageContext_t& c)
     c.head(200);
   }
   
+  // show password warning:
+  if (MyConfig.GetParamValue("password", "module").empty()) {
+    c.alert("danger",
+      "<p><strong>Warning:</strong> no admin password set. <strong>Web access is open to the public.</strong></p>"
+      "<p>Please change your password now.</p>");
+  }
+  
+  // create some random passwords:
+  std::ostringstream pwsugg;
+  srand48(StdMetrics.ms_m_monotonic->AsInt() * StdMetrics.ms_m_freeram->AsInt());
+  pwsugg << "<p>Inspiration:";
+  for (int i=0; i<5; i++)
+    pwsugg << " <code class=\"autoselect\">" << c.encode_html(pwgen(12)) << "</code>";
+  pwsugg << "</p>";
+  
   // generate form:
   c.panel_start("primary", "Change module &amp; admin password");
   c.form_start(p.uri);
-  c.input_password("Old password", "oldpass", "", NULL, NULL, "autocomplete=\"section-login current-password\"");
-  c.input_password("New password", "newpass1", "", NULL, NULL, "autocomplete=\"section-login new-password\"");
-  c.input_password("…repeat", "newpass2", "", "Repeat new password", NULL, "autocomplete=\"section-login new-password\"");
+  c.input_password("Old password", "oldpass", "",
+    NULL, NULL, "autocomplete=\"section-login current-password\"");
+  c.input_password("New password", "newpass1", "",
+    "Enter new password, min. 8 characters", pwsugg.str().c_str(), "autocomplete=\"section-login new-password\"");
+  c.input_password("…repeat", "newpass2", "",
+    "Repeat new password", NULL, "autocomplete=\"section-login new-password\"");
   c.input_button("default", "Submit");
   c.form_end();
-  c.panel_end();
+  c.panel_end(
+    (MyConfig.GetParamValue("password", "module") == MyConfig.GetParamValue("wifi.ap", "OVMS"))
+    ? "<p>Note: this changes both the module and the Wifi access point password for network <code>OVMS</code>, as they are identical right now.</p>"
+      "<p>You can set a separate Wifi password on the Wifi configuration page.</p>"
+    : NULL);
+  
+  c.alert("info",
+    "<p>Note: if you lose your password, you may need to erase your configuration to restore access to the module.</p>"
+    "<p>To set a new password via console, registered App or SMS, execute command <kbd>config set password module …</kbd>.</p>");
   c.done();
 }
 
@@ -361,7 +449,7 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
 {
   std::string error, info;
   std::string vehicleid, vehicletype, vehiclename, timezone, units_distance;
-  
+
   if (c.method == "POST") {
     // process form submission:
     vehicleid = c.getvar("vehicleid");
@@ -369,12 +457,12 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
     vehiclename = c.getvar("vehiclename");
     timezone = c.getvar("timezone");
     units_distance = c.getvar("units_distance");
-    
+
     if (vehicleid.length() == 0)
       error += "<li data-input=\"vehicleid\">Vehicle ID must not be empty</li>";
     if (vehicleid.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-") != std::string::npos)
       error += "<li data-input=\"vehicleid\">Vehicle ID may only contain ASCII letters, digits and '-'</li>";
-    
+
     if (error == "" && StdMetrics.ms_v_type->AsString() != vehicletype) {
       MyVehicleFactory.SetVehicle(vehicletype.c_str());
       if (!MyVehicleFactory.ActiveVehicle())
@@ -382,7 +470,7 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
       else
         info += "<li>New vehicle type <code>" + vehicletype + "</code> has been set.</li>";
     }
-    
+
     if (error == "") {
       // success:
       MyConfig.SetParamValue("vehicle", "id", vehicleid);
@@ -390,7 +478,7 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
       MyConfig.SetParamValue("vehicle", "name", vehiclename);
       MyConfig.SetParamValue("vehicle", "timezone", timezone);
       MyConfig.SetParamValue("vehicle", "units.distance", units_distance);
-      
+
       info = "<p class=\"lead\">Success!</p><ul class=\"infolist\">" + info + "</ul>";
       info += "<script>$(\"#menu\").load(\"/menu\")</script>";
       c.head(200);
@@ -399,7 +487,7 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
       c.done();
       return;
     }
-    
+
     // output error, return to form:
     error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
     c.head(400);
@@ -414,7 +502,7 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
     units_distance = MyConfig.GetParamValue("vehicle", "units.distance");
     c.head(200);
   }
-  
+
   // generate form:
   c.panel_start("primary", "Vehicle configuration");
   c.form_start(p.uri);
@@ -426,11 +514,13 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
   c.input_text("Vehicle ID", "vehicleid", vehicleid.c_str(), "Use ASCII letters, digits and '-'",
     "<p>Note: this is also the <strong>vehicle account ID</strong> for server connections.</p>");
   c.input_text("Vehicle name", "vehiclename", vehiclename.c_str(), "optional, the name of your car");
-  c.input_text("Time zone", "timezone", timezone.c_str(), "optional, default UTC");
-  c.input_select_start("Distance units", "units_distance");
-  c.input_select_option("Kilometers", "K", units_distance == "K");
-  c.input_select_option("Miles", "M", units_distance == "M");
-  c.input_select_end();
+  c.input_text("Time zone", "timezone", timezone.c_str(), "optional, default UTC",
+    "<p>Web links: <a target=\"_blank\" href=\"https://remotemonitoringsystems.ca/time-zone-abbreviations.php\">Example Timezone Strings</a>, "
+    "<a target=\"_blank\" href=\"https://www.gnu.org/software/libc/manual/html_node/TZ-Variable.html\">Glibc manual</a></p>");
+  c.input_radiobtn_start("Distance units", "units_distance");
+  c.input_radiobtn_option("units_distance", "Kilometers", "K", units_distance == "K");
+  c.input_radiobtn_option("units_distance", "Miles", "M", units_distance == "M");
+  c.input_radiobtn_end();
   c.input_button("default", "Save");
   c.form_end();
   c.panel_end();
@@ -443,27 +533,29 @@ void OvmsWebServer::HandleCfgVehicle(PageEntry_t& p, PageContext_t& c)
  */
 void OvmsWebServer::HandleCfgModem(PageEntry_t& p, PageContext_t& c)
 {
-  std::string apn, apn_user, apn_pass;
+  std::string apn, apn_user, apn_pass, network_dns;
   bool enable_gps, enable_gpstime, enable_net, enable_sms;
-  
+
   if (c.method == "POST") {
     // process form submission:
     apn = c.getvar("apn");
     apn_user = c.getvar("apn_user");
     apn_pass = c.getvar("apn_pass");
+    network_dns = c.getvar("network_dns");
     enable_net = (c.getvar("enable_net") == "yes");
     enable_sms = (c.getvar("enable_sms") == "yes");
     enable_gps = (c.getvar("enable_gps") == "yes");
     enable_gpstime = (c.getvar("enable_gpstime") == "yes");
-    
+
     MyConfig.SetParamValue("modem", "apn", apn);
     MyConfig.SetParamValue("modem", "apn.user", apn_user);
     MyConfig.SetParamValue("modem", "apn.password", apn_pass);
+    MyConfig.SetParamValue("network", "dns", network_dns);
     MyConfig.SetParamValueBool("modem", "enable.net", enable_net);
     MyConfig.SetParamValueBool("modem", "enable.sms", enable_sms);
     MyConfig.SetParamValueBool("modem", "enable.gps", enable_gps);
     MyConfig.SetParamValueBool("modem", "enable.gpstime", enable_gpstime);
-    
+
     c.head(200);
     c.alert("success", "<p class=\"lead\">Modem configured.</p>");
     OutputHome(p, c);
@@ -475,15 +567,40 @@ void OvmsWebServer::HandleCfgModem(PageEntry_t& p, PageContext_t& c)
   apn = MyConfig.GetParamValue("modem", "apn");
   apn_user = MyConfig.GetParamValue("modem", "apn.user");
   apn_pass = MyConfig.GetParamValue("modem", "apn.password");
+  network_dns = MyConfig.GetParamValue("network", "dns");
   enable_net = MyConfig.GetParamValueBool("modem", "enable.net", true);
   enable_sms = MyConfig.GetParamValueBool("modem", "enable.sms", true);
   enable_gps = MyConfig.GetParamValueBool("modem", "enable.gps", false);
   enable_gpstime = MyConfig.GetParamValueBool("modem", "enable.gpstime", false);
-  
+
   // generate form:
   c.head(200);
   c.panel_start("primary", "Modem configuration");
   c.form_start(p.uri);
+
+  std::string info;
+  std::string iccid = StdMetrics.ms_m_net_mdm_iccid->AsString();
+  if (!iccid.empty()) {
+    info = "<code class=\"autoselect\">" + iccid + "</code>";
+  } else {
+    info =
+      "<div class=\"receiver\">"
+        "<code class=\"autoselect\" data-metric=\"m.net.mdm.iccid\">(power modem on to read)</code>"
+        "&nbsp;"
+        "<button class=\"btn btn-default\" data-cmd=\"power simcom on\" data-target=\"#pso\">Power modem on</button>"
+        "&nbsp;"
+        "<samp id=\"pso\" class=\"samp-inline\"></samp>"
+      "</div>"
+      "<script>"
+      "$(\".receiver\").on(\"msg:metrics\", function(e, update){"
+        "$(this).find(\"[data-metric]\").each(function(){"
+          "if (metrics[$(this).data(\"metric\")] != \"\" && $(this).text() != metrics[$(this).data(\"metric\")])"
+            "$(this).text(metrics[$(this).data(\"metric\")]);"
+        "});"
+      "}).trigger(\"msg:metrics\");"
+      "</script>";
+  }
+  c.input_info("SIM ICCID", info.c_str());
 
   c.fieldset_start("Internet");
   c.input_checkbox("Enable IP networking", "enable_net", enable_net);
@@ -491,15 +608,17 @@ void OvmsWebServer::HandleCfgModem(PageEntry_t& p, PageContext_t& c)
     "<p>For Hologram, use APN <code>hologram</code> with empty username &amp; password</p>");
   c.input_text("…username", "apn_user", apn_user.c_str());
   c.input_text("…password", "apn_pass", apn_pass.c_str());
+  c.input_text("DNS", "network_dns", network_dns.c_str(), "optional fixed DNS servers (space separated)",
+    "<p>Set this to i.e. <code>8.8.8.8 8.8.4.4</code> (Google public DNS) if you encounter problems with your network provider DNS</p>");
   c.fieldset_end();
-  
+
   c.fieldset_start("Features");
   c.input_checkbox("Enable SMS", "enable_sms", enable_sms);
   c.input_checkbox("Enable GPS", "enable_gps", enable_gps);
   c.input_checkbox("Use GPS time", "enable_gpstime", enable_gpstime,
     "<p>Note: GPS &amp; GPS time support can be left disabled, vehicles will activate them as needed</p>");
   c.fieldset_end();
-  
+
   c.hr();
   c.input_button("default", "Save");
   c.form_end();
@@ -516,7 +635,7 @@ void OvmsWebServer::HandleCfgServerV2(PageEntry_t& p, PageContext_t& c)
   std::string error;
   std::string server, vehicleid, password, port;
   std::string updatetime_connected, updatetime_idle;
-  
+
   if (c.method == "POST") {
     // process form submission:
     server = c.getvar("server");
@@ -525,7 +644,7 @@ void OvmsWebServer::HandleCfgServerV2(PageEntry_t& p, PageContext_t& c)
     port = c.getvar("port");
     updatetime_connected = c.getvar("updatetime_connected");
     updatetime_idle = c.getvar("updatetime_idle");
-    
+
     // validate:
     if (port != "") {
       if (port.find_first_not_of("0123456789") != std::string::npos
@@ -547,7 +666,7 @@ void OvmsWebServer::HandleCfgServerV2(PageEntry_t& p, PageContext_t& c)
         error += "<li data-input=\"updatetime_idle\">Update interval (idle) must be at least 1 second</li>";
       }
     }
-    
+
     if (error == "") {
       // success:
       MyConfig.SetParamValue("server.v2", "server", server);
@@ -557,14 +676,14 @@ void OvmsWebServer::HandleCfgServerV2(PageEntry_t& p, PageContext_t& c)
         MyConfig.SetParamValue("server.v2", "password", password);
       MyConfig.SetParamValue("server.v2", "updatetime.connected", updatetime_connected);
       MyConfig.SetParamValue("server.v2", "updatetime.idle", updatetime_idle);
-      
+
       c.head(200);
       c.alert("success", "<p class=\"lead\">Server V2 (MP) connection configured.</p>");
       OutputHome(p, c);
       c.done();
       return;
     }
-    
+
     // output error, return to form:
     error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
     c.head(400);
@@ -578,14 +697,14 @@ void OvmsWebServer::HandleCfgServerV2(PageEntry_t& p, PageContext_t& c)
     port = MyConfig.GetParamValue("server.v2", "port");
     updatetime_connected = MyConfig.GetParamValue("server.v2", "updatetime.connected");
     updatetime_idle = MyConfig.GetParamValue("server.v2", "updatetime.idle");
-    
+
     // generate form:
     c.head(200);
   }
 
   c.panel_start("primary", "Server V2 (MP) configuration");
   c.form_start(p.uri);
-  
+
   c.input_text("Host", "server", server.c_str(), "Enter host name or IP address",
     "<p>Public OVMS V2 servers:</p>"
     "<ul>"
@@ -605,7 +724,7 @@ void OvmsWebServer::HandleCfgServerV2(PageEntry_t& p, PageContext_t& c)
   c.input_text("…idle", "updatetime_idle", updatetime_idle.c_str(),
     "optional, in seconds, default: 600");
   c.fieldset_end();
-  
+
   c.hr();
   c.input_button("default", "Save");
   c.form_end();
@@ -622,7 +741,7 @@ void OvmsWebServer::HandleCfgServerV3(PageEntry_t& p, PageContext_t& c)
   std::string error;
   std::string server, user, password, port;
   std::string updatetime_connected, updatetime_idle;
-  
+
   if (c.method == "POST") {
     // process form submission:
     server = c.getvar("server");
@@ -631,7 +750,7 @@ void OvmsWebServer::HandleCfgServerV3(PageEntry_t& p, PageContext_t& c)
     port = c.getvar("port");
     updatetime_connected = c.getvar("updatetime_connected");
     updatetime_idle = c.getvar("updatetime_idle");
-    
+
     // validate:
     if (port != "") {
       if (port.find_first_not_of("0123456789") != std::string::npos
@@ -649,7 +768,7 @@ void OvmsWebServer::HandleCfgServerV3(PageEntry_t& p, PageContext_t& c)
         error += "<li data-input=\"updatetime_idle\">Update interval (idle) must be at least 1 second</li>";
       }
     }
-    
+
     if (error == "") {
       // success:
       MyConfig.SetParamValue("server.v3", "server", server);
@@ -659,14 +778,14 @@ void OvmsWebServer::HandleCfgServerV3(PageEntry_t& p, PageContext_t& c)
       MyConfig.SetParamValue("server.v3", "port", port);
       MyConfig.SetParamValue("server.v3", "updatetime.connected", updatetime_connected);
       MyConfig.SetParamValue("server.v3", "updatetime.idle", updatetime_idle);
-      
+
       c.head(200);
       c.alert("success", "<p class=\"lead\">Server V3 (MQTT) connection configured.</p>");
       OutputHome(p, c);
       c.done();
       return;
     }
-    
+
     // output error, return to form:
     error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
     c.head(400);
@@ -680,14 +799,14 @@ void OvmsWebServer::HandleCfgServerV3(PageEntry_t& p, PageContext_t& c)
     port = MyConfig.GetParamValue("server.v3", "port");
     updatetime_connected = MyConfig.GetParamValue("server.v3", "updatetime.connected");
     updatetime_idle = MyConfig.GetParamValue("server.v3", "updatetime.idle");
-    
+
     // generate form:
     c.head(200);
   }
 
   c.panel_start("primary", "Server V3 (MQTT) configuration");
   c.form_start(p.uri);
-  
+
   c.input_text("Host", "server", server.c_str(), "Enter host name or IP address",
     "<p>Public OVMS V3 servers (MQTT brokers):</p>"
     "<ul>"
@@ -706,7 +825,7 @@ void OvmsWebServer::HandleCfgServerV3(PageEntry_t& p, PageContext_t& c)
   c.input_text("…idle", "updatetime_idle", updatetime_idle.c_str(),
     "optional, in seconds, default: 600");
   c.fieldset_end();
-  
+
   c.hr();
   c.input_button("default", "Save");
   c.form_end();
@@ -732,7 +851,7 @@ void OvmsWebServer::HandleCfgWebServer(PageEntry_t& p, PageContext_t& c)
     enable_files = (c.getvar("enable_files") == "yes");
     enable_dirlist = (c.getvar("enable_dirlist") == "yes");
     auth_global = (c.getvar("auth_global") == "yes");
-    
+
     // validate:
     if (docroot != "" && docroot[0] != '/') {
       error += "<li data-input=\"docroot\">Document root must start with '/'</li>";
@@ -740,7 +859,7 @@ void OvmsWebServer::HandleCfgWebServer(PageEntry_t& p, PageContext_t& c)
     if (docroot == "/" || docroot == "/store" || docroot == "/store/" || startsWith(docroot, "/store/ovms_config")) {
       warn += "<li data-input=\"docroot\">Document root <code>" + docroot + "</code> may open access to OVMS configuration files, consider using a sub directory</li>";
     }
-    
+
     if (error == "") {
       // success:
       if (docroot == "")      MyConfig.DeleteInstance("http.server", "docroot");
@@ -749,13 +868,77 @@ void OvmsWebServer::HandleCfgWebServer(PageEntry_t& p, PageContext_t& c)
       else                    MyConfig.SetParamValue("http.server", "auth.domain", auth_domain);
       if (auth_file == "")    MyConfig.DeleteInstance("http.server", "auth.file");
       else                    MyConfig.SetParamValue("http.server", "auth.file", auth_file);
-      
+
       MyConfig.SetParamValueBool("http.server", "enable.files", enable_files);
       MyConfig.SetParamValueBool("http.server", "enable.dirlist", enable_dirlist);
       MyConfig.SetParamValueBool("http.server", "auth.global", auth_global);
-      
+
       c.head(200);
       c.alert("success", "<p class=\"lead\">Webserver configuration saved.</p>");
+      if (warn != "") {
+        warn = "<p class=\"lead\">Warning:</p><ul class=\"warnlist\">" + warn + "</ul>";
+        c.alert("warning", warn.c_str());
+      }
+      OutputHome(p, c);
+      c.done();
+      return;
+    }
+
+    // output error, return to form:
+    error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
+    c.head(400);
+    c.alert("danger", error.c_str());
+  }
+  else {
+    // read configuration:
+    docroot = MyConfig.GetParamValue("http.server", "docroot");
+    auth_domain = MyConfig.GetParamValue("http.server", "auth.domain");
+    auth_file = MyConfig.GetParamValue("http.server", "auth.file");
+    enable_files = MyConfig.GetParamValueBool("http.server", "enable.files", true);
+    enable_dirlist = MyConfig.GetParamValueBool("http.server", "enable.dirlist", true);
+    auth_global = MyConfig.GetParamValueBool("http.server", "auth.global", true);
+
+    // generate form:
+    c.head(200);
+  }
+
+  c.panel_start("primary", "Webserver configuration");
+  c.form_start(p.uri);
+
+  c.input_checkbox("Enable file access", "enable_files", enable_files);
+  c.input_text("Root path", "docroot", docroot.c_str(), "Default: /sd");
+  c.input_checkbox("Enable directory listings", "enable_dirlist", enable_dirlist);
+
+  c.input_checkbox("Enable global file auth", "auth_global", auth_global,
+    "<p>If enabled, file access is globally protected by the admin password (if set).</p>"
+    "<p>Disabling allows public access to directories without an auth file.</p>");
+  c.input_text("Directory auth file", "auth_file", auth_file.c_str(), "Default: .htaccess",
+    "<p>Note: sub directories do not inherit the parent auth file.</p>");
+  c.input_text("Auth domain/realm", "auth_domain", auth_domain.c_str(), "Default: ovms");
+
+  c.input_button("default", "Save");
+  c.form_end();
+  c.panel_end();
+  c.done();
+}
+
+
+/**
+ * HandleCfgWifi: configure wifi networks (URL /cfg/wifi)
+ */
+
+void OvmsWebServer::HandleCfgWifi(PageEntry_t& p, PageContext_t& c)
+{
+  if (c.method == "POST") {
+    std::string warn, error;
+
+    // process form submission:
+    UpdateWifiTable(p, c, "ap", "wifi.ap", warn, error, 8);
+    UpdateWifiTable(p, c, "client", "wifi.ssid", warn, error, 0);
+    
+    if (error == "") {
+      c.head(200);
+      c.alert("success", "<p class=\"lead\">Wifi configuration saved.</p>");
       if (warn != "") {
         warn = "<p class=\"lead\">Warning:</p><ul class=\"warnlist\">" + warn + "</ul>";
         c.alert("warning", warn.c_str());
@@ -771,78 +954,23 @@ void OvmsWebServer::HandleCfgWebServer(PageEntry_t& p, PageContext_t& c)
     c.alert("danger", error.c_str());
   }
   else {
-    // read configuration:
-    docroot = MyConfig.GetParamValue("http.server", "docroot");
-    auth_domain = MyConfig.GetParamValue("http.server", "auth.domain");
-    auth_file = MyConfig.GetParamValue("http.server", "auth.file");
-    enable_files = MyConfig.GetParamValueBool("http.server", "enable.files", true);
-    enable_dirlist = MyConfig.GetParamValueBool("http.server", "enable.dirlist", true);
-    auth_global = MyConfig.GetParamValueBool("http.server", "auth.global", true);
-    
-    // generate form:
     c.head(200);
-  }
-
-  c.panel_start("primary", "Webserver configuration");
-  c.form_start(p.uri);
-  
-  c.input_checkbox("Enable file access", "enable_files", enable_files);
-  c.input_text("Root path", "docroot", docroot.c_str(), "Default: /sd");
-  c.input_checkbox("Enable directory listings", "enable_dirlist", enable_dirlist);
-
-  c.input_checkbox("Enable global file auth", "auth_global", auth_global,
-    "<p>If enabled, file access is globally protected by the admin password (if set).</p>"
-    "<p>Disabling allows public access to directories without an auth file.</p>");
-  c.input_text("Directory auth file", "auth_file", auth_file.c_str(), "Default: .htaccess",
-    "<p>Note: sub directories do not inherit the parent auth file.</p>");
-  c.input_text("Auth domain/realm", "auth_domain", auth_domain.c_str(), "Default: ovms");
-  
-  c.input_button("default", "Save");
-  c.form_end();
-  c.panel_end();
-  c.done();
-}
-
-
-/**
- * HandleCfgWifi: configure wifi networks (URL /cfg/wifi)
- */
-
-void OvmsWebServer::HandleCfgWifi(PageEntry_t& p, PageContext_t& c)
-{
-  if (c.method == "POST") {
-    std::string warn;
-    
-    // process form submission:
-    UpdateWifiTable(p, c, "ap", "wifi.ap", warn);
-    UpdateWifiTable(p, c, "cl", "wifi.ssid", warn);
-    
-    c.head(200);
-    c.alert("success", "<p class=\"lead\">Wifi configuration saved.</p>");
-    if (warn != "") {
-      warn = "<p class=\"lead\">Warning:</p><ul class=\"warnlist\">" + warn + "</ul>";
-      c.alert("warning", warn.c_str());
-    }
-    OutputHome(p, c);
-    c.done();
-    return;
   }
 
   // generate form:
-  c.head(200);
   c.panel_start("primary", "Wifi configuration");
   c.printf(
     "<form method=\"post\" action=\"%s\" target=\"#main\">"
     , _attr(p.uri));
-  
+
   c.fieldset_start("Access point networks");
-  OutputWifiTable(p, c, "ap", "wifi.ap");
+  OutputWifiTable(p, c, "ap", "wifi.ap", MyConfig.GetParamValue("auto", "wifi.ssid.ap", "OVMS"));
   c.fieldset_end();
 
   c.fieldset_start("Wifi client networks");
-  OutputWifiTable(p, c, "cl", "wifi.ssid");
+  OutputWifiTable(p, c, "client", "wifi.ssid", MyConfig.GetParamValue("auto", "wifi.ssid.client"));
   c.fieldset_end();
-  
+
   c.print(
     "<hr>"
     "<button type=\"submit\" class=\"btn btn-default center-block\">Save</button>"
@@ -868,14 +996,26 @@ void OvmsWebServer::HandleCfgWifi(PageEntry_t& p, PageContext_t& c)
       "counter.val(nr);"
     "}"
     "</script>");
-  
+
   c.panel_end();
   c.done();
 }
 
-void OvmsWebServer::OutputWifiTable(PageEntry_t& p, PageContext_t& c, const std::string prefix, const std::string paramname)
+void OvmsWebServer::OutputWifiTable(PageEntry_t& p, PageContext_t& c, const std::string prefix, const std::string paramname, const std::string autostart_ssid)
 {
   OvmsConfigParam* param = MyConfig.CachedParam(paramname);
+  int pos = 0, pos_autostart = 0, max;
+  char buf[50];
+  std::string ssid, pass;
+
+  if (c.method == "POST") {
+    max = atoi(c.getvar(prefix.c_str()).c_str());
+    sprintf(buf, "%s_autostart", prefix.c_str());
+    pos_autostart = atoi(c.getvar(buf).c_str());
+  }
+  else {
+    max = param->m_map.size();
+  }
   
   c.printf(
     "<div class=\"table-responsive\">"
@@ -889,21 +1029,41 @@ void OvmsWebServer::OutputWifiTable(PageEntry_t& p, PageContext_t& c, const std:
           "</tr>"
         "</thead>"
         "<tbody>"
-    , _attr(prefix), param->m_map.size());
-  
-  int pos = 0;
-  for (auto const& kv : param->m_map) {
-    pos++;
-    c.printf(
+    , _attr(prefix), max);
+
+  if (c.method == "POST") {
+    for (pos = 1; pos <= max; pos++) {
+      sprintf(buf, "%s_ssid_%d", prefix.c_str(), pos);
+      ssid = c.getvar(buf);
+      c.printf(
           "<tr>"
-            "<td><button type=\"button\" class=\"btn btn-danger\" onclick=\"delRow(this)\"><strong>✖</strong></button></td>"
+            "<td><button type=\"button\" class=\"btn btn-danger\" onclick=\"delRow(this)\" %s><strong>✖</strong></button></td>"
             "<td><input type=\"text\" class=\"form-control\" name=\"%s_ssid_%d\" value=\"%s\"></td>"
             "<td><input type=\"password\" class=\"form-control\" name=\"%s_pass_%d\" placeholder=\"no change\"></td>"
           "</tr>"
-      , _attr(prefix), pos, _attr(kv.first)
+      , (pos == pos_autostart) ? "disabled title=\"Current autostart network\"" : ""
+      , _attr(prefix), pos, _attr(ssid)
       , _attr(prefix), pos);
+    }
   }
-  
+  else {
+    for (auto const& kv : param->m_map) {
+      pos++;
+      ssid = kv.first;
+      if (ssid == autostart_ssid)
+        pos_autostart = pos;
+      c.printf(
+          "<tr>"
+            "<td><button type=\"button\" class=\"btn btn-danger\" onclick=\"delRow(this)\" %s><strong>✖</strong></button></td>"
+            "<td><input type=\"text\" class=\"form-control\" name=\"%s_ssid_%d\" value=\"%s\"></td>"
+            "<td><input type=\"password\" class=\"form-control\" name=\"%s_pass_%d\" placeholder=\"no change\"></td>"
+          "</tr>"
+      , (pos == pos_autostart) ? "disabled title=\"Current autostart network\"" : ""
+      , _attr(prefix), pos, _attr(ssid)
+      , _attr(prefix), pos);
+    }
+  }
+
   c.print(
           "<tr>"
             "<td><button type=\"button\" class=\"btn btn-success\" onclick=\"addRow(this)\"><strong>✚</strong></button></td>"
@@ -911,37 +1071,63 @@ void OvmsWebServer::OutputWifiTable(PageEntry_t& p, PageContext_t& c, const std:
             "<td></td>"
           "</tr>"
         "</tbody>"
-      "</table>"
-    "</div>");
+      "</table>");
+  c.printf(
+      "<input type=\"hidden\" name=\"%s_autostart\" value=\"%d\">"
+    "</div>"
+    , _attr(prefix), pos_autostart);
 }
 
-void OvmsWebServer::UpdateWifiTable(PageEntry_t& p, PageContext_t& c, const std::string prefix, const std::string paramname, std::string& warn)
+void OvmsWebServer::UpdateWifiTable(PageEntry_t& p, PageContext_t& c, const std::string prefix, const std::string paramname,
+  std::string& warn, std::string& error, int pass_minlen)
 {
   OvmsConfigParam* param = MyConfig.CachedParam(paramname);
-  int i, max;
-  std::string ssid, pass;
+  int i, max, pos_autostart;
+  std::string ssid, pass, ssid_autostart;
   char buf[50];
   ConfigParamMap newmap;
-  
+
   max = atoi(c.getvar(prefix.c_str()).c_str());
-  
+  sprintf(buf, "%s_autostart", prefix.c_str());
+  pos_autostart = atoi(c.getvar(buf).c_str());
+
   for (i = 1; i <= max; i++) {
     sprintf(buf, "%s_ssid_%d", prefix.c_str(), i);
     ssid = c.getvar(buf);
-    if (ssid == "")
+    if (ssid == "") {
+      if (i == pos_autostart)
+        error += "<li>Autostart SSID may not be empty</li>";
       continue;
+    }
     sprintf(buf, "%s_pass_%d", prefix.c_str(), i);
     pass = c.getvar(buf);
     if (pass == "")
       pass = param->GetValue(ssid);
-    if (pass == "")
-      warn += "<li>SSID <code>" + ssid + "</code> has no password</li>";
+    if (pass == "") {
+      if (i == pos_autostart)
+        error += "<li>Autostart SSID <code>" + ssid + "</code> has no password</li>";
+      else
+        warn += "<li>SSID <code>" + ssid + "</code> has no password</li>";
+    }
+    else if (pass.length() < pass_minlen) {
+      sprintf(buf, "%d", pass_minlen);
+      error += "<li>SSID <code>" + ssid + "</code>: password is too short (min " + buf + " chars)</li>";
+    }
     newmap[ssid] = pass;
+    if (i == pos_autostart)
+      ssid_autostart = ssid;
   }
-  
-  param->m_map.clear();
-  param->m_map = std::move(newmap);
-  param->Save();
+
+  if (error == "") {
+    // save new map:
+    param->m_map.clear();
+    param->m_map = std::move(newmap);
+    param->Save();
+    
+    // set new autostart ssid:
+    if (ssid_autostart != "")
+      MyConfig.SetParamValue("auto", "wifi.ssid." + prefix, ssid_autostart);
+  }
 }
 
 
@@ -967,55 +1153,105 @@ void OvmsWebServer::HandleCfgAutoInit(PageEntry_t& p, PageContext_t& c)
     wifi_ssid_ap = c.getvar("wifi_ssid_ap");
     wifi_ssid_client = c.getvar("wifi_ssid_client");
     
-    // store:
-    MyConfig.SetParamValueBool("auto", "init", init);
-    MyConfig.SetParamValueBool("auto", "ext12v", ext12v);
-    MyConfig.SetParamValueBool("auto", "modem", modem);
-    MyConfig.SetParamValueBool("auto", "server.v2", server_v2);
-    MyConfig.SetParamValueBool("auto", "server.v3", server_v3);
-    MyConfig.SetParamValue("auto", "vehicle.type", vehicle_type);
-    MyConfig.SetParamValue("auto", "obd2ecu", obd2ecu);
-    MyConfig.SetParamValue("auto", "wifi.mode", wifi_mode);
-    MyConfig.SetParamValue("auto", "wifi.ssid.ap", wifi_ssid_ap);
-    MyConfig.SetParamValue("auto", "wifi.ssid.client", wifi_ssid_client);
+    // check:
+    if (wifi_mode == "ap" || wifi_mode == "apclient") {
+      if (wifi_ssid_ap.empty())
+        wifi_ssid_ap = "OVMS";
+      if (MyConfig.GetParamValue("wifi.ap", wifi_ssid_ap).empty()) {
+        if (MyConfig.GetParamValue("password", "module").empty())
+          error += "<li data-input=\"wifi_ssid_ap\">Wifi AP mode invalid: no password set for SSID!</li>";
+        else
+          warn += "<li data-input=\"wifi_ssid_ap\">Wifi AP network has no password → uses module password.</li>";
+      }
+    }
+    if (wifi_mode == "client" || wifi_mode == "apclient") {
+      if (wifi_ssid_client.empty()) {
+        if (wifi_mode == "apclient") {
+          error += "<li data-input=\"wifi_ssid_client\">Wifi client scan mode not supported for AP+Client!</li>";
+        }
+        else {
+          // check for defined client SSIDs:
+          OvmsConfigParam* param = MyConfig.CachedParam("wifi.ssid");
+          int cnt = 0;
+          for (auto const& kv : param->m_map) {
+            if (kv.second != "")
+              cnt++;
+          }
+          if (cnt == 0) {
+            error += "<li data-input=\"wifi_ssid_client\">Wifi client scan mode invalid: no SSIDs defined!</li>";
+          }
+        }
+      }
+      else if (MyConfig.GetParamValue("wifi.ssid", wifi_ssid_client).empty()) {
+        error += "<li data-input=\"wifi_ssid_client\">Wifi client mode invalid: no password set for SSID!</li>";
+      }
+    }
+
+    if (error == "") {
+      // success:
+      MyConfig.SetParamValueBool("auto", "init", init);
+      MyConfig.SetParamValueBool("auto", "ext12v", ext12v);
+      MyConfig.SetParamValueBool("auto", "modem", modem);
+      MyConfig.SetParamValueBool("auto", "server.v2", server_v2);
+      MyConfig.SetParamValueBool("auto", "server.v3", server_v3);
+      MyConfig.SetParamValue("auto", "vehicle.type", vehicle_type);
+      MyConfig.SetParamValue("auto", "obd2ecu", obd2ecu);
+      MyConfig.SetParamValue("auto", "wifi.mode", wifi_mode);
+      MyConfig.SetParamValue("auto", "wifi.ssid.ap", wifi_ssid_ap);
+      MyConfig.SetParamValue("auto", "wifi.ssid.client", wifi_ssid_client);
+
+      c.head(200);
+      c.alert("success", "<p class=\"lead\">Auto start configuration saved.</p>");
+      if (warn != "") {
+        warn = "<p class=\"lead\">Warning:</p><ul class=\"warnlist\">" + warn + "</ul>";
+        c.alert("warning", warn.c_str());
+      }
+      if (c.getvar("action") == "save-reboot")
+        OutputReboot(p, c);
+      else
+        OutputHome(p, c);
+      c.done();
+      return;
+    }
     
+    // output error, return to form:
+    error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
+    c.head(400);
+    c.alert("danger", error.c_str());
+  }
+  else {
+    // read configuration:
+    init = MyConfig.GetParamValueBool("auto", "init", true);
+    ext12v = MyConfig.GetParamValueBool("auto", "ext12v", false);
+    modem = MyConfig.GetParamValueBool("auto", "modem", false);
+    server_v2 = MyConfig.GetParamValueBool("auto", "server.v2", false);
+    server_v3 = MyConfig.GetParamValueBool("auto", "server.v3", false);
+    vehicle_type = MyConfig.GetParamValue("auto", "vehicle.type");
+    obd2ecu = MyConfig.GetParamValue("auto", "obd2ecu");
+    wifi_mode = MyConfig.GetParamValue("auto", "wifi.mode", "ap");
+    wifi_ssid_ap = MyConfig.GetParamValue("auto", "wifi.ssid.ap");
+    if (wifi_ssid_ap.empty())
+      wifi_ssid_ap = "OVMS";
+    wifi_ssid_client = MyConfig.GetParamValue("auto", "wifi.ssid.client");
+
     c.head(200);
-    c.alert("success", "<p class=\"lead\">Auto start configuration saved.</p>");
-    OutputHome(p, c);
-    c.done();
-    return;
   }
 
-  // read configuration:
-  init = MyConfig.GetParamValueBool("auto", "init", true);
-  ext12v = MyConfig.GetParamValueBool("auto", "ext12v", false);
-  modem = MyConfig.GetParamValueBool("auto", "modem", false);
-  server_v2 = MyConfig.GetParamValueBool("auto", "server.v2", false);
-  server_v3 = MyConfig.GetParamValueBool("auto", "server.v3", false);
-  vehicle_type = MyConfig.GetParamValue("auto", "vehicle.type");
-  obd2ecu = MyConfig.GetParamValue("auto", "obd2ecu");
-  wifi_mode = MyConfig.GetParamValue("auto", "wifi.mode", "ap");
-  wifi_ssid_ap = MyConfig.GetParamValue("auto", "wifi.ssid.ap");
-  if (wifi_ssid_ap.empty())
-    wifi_ssid_ap = "OVMS";
-  wifi_ssid_client = MyConfig.GetParamValue("auto", "wifi.ssid.client");
-  
   // generate form:
-  c.head(200);
-
   c.panel_start("primary", "Auto start configuration");
   c.form_start(p.uri);
-  
+
   c.input_checkbox("Enable auto start", "init", init,
-    "<p>Note: if a crash or reboot occurs within 10 seconds after powering the module, "
-    "this option will automatically be disabled and need to be re-enabled manually.</p>");
-  
+    "<p>Note: if a crash occurs within 10 seconds after powering the module, autostart will be temporarily"
+    " disabled. You may need to use the USB shell to access the module and fix the config.</p>");
+
   c.input_checkbox("Power on external 12V", "ext12v", ext12v,
     "<p>Enable to provide 12V to external devices connected to the module (i.e. ECU displays).</p>");
-  
+
   c.input_select_start("Wifi mode", "wifi_mode");
   c.input_select_option("Access point", "ap", (wifi_mode == "ap"));
   c.input_select_option("Client mode", "client", (wifi_mode == "client"));
+  c.input_select_option("Access point + Client", "apclient", (wifi_mode == "apclient"));
   c.input_select_option("Off", "off", (wifi_mode.empty() || wifi_mode == "off"));
   c.input_select_end();
 
@@ -1026,23 +1262,23 @@ void OvmsWebServer::HandleCfgAutoInit(PageEntry_t& p, PageContext_t& c)
   for (auto const& kv : param->m_map)
     c.input_select_option(kv.first.c_str(), kv.first.c_str(), (kv.first == wifi_ssid_ap));
   c.input_select_end();
-  
+
   c.input_select_start("… client mode SSID", "wifi_ssid_client");
   param = MyConfig.CachedParam("wifi.ssid");
   c.input_select_option("Any known SSID (scan mode)", "", wifi_ssid_client.empty());
   for (auto const& kv : param->m_map)
     c.input_select_option(kv.first.c_str(), kv.first.c_str(), (kv.first == wifi_ssid_client));
   c.input_select_end();
-  
+
   c.input_checkbox("Start modem", "modem", modem,
     "<p>Note: a vehicle module may start the modem as necessary, independantly of this option.</p>");
-  
+
   c.input_select_start("Vehicle type", "vehicle_type");
   c.input_select_option("&mdash;", "", vehicle_type.empty());
   for (OvmsVehicleFactory::map_vehicle_t::iterator k=MyVehicleFactory.m_vmap.begin(); k!=MyVehicleFactory.m_vmap.end(); ++k)
     c.input_select_option(k->second.name, k->first, (vehicle_type == k->first));
   c.input_select_end();
-  
+
   c.input_select_start("Start OBD2ECU", "obd2ecu");
   c.input_select_option("&mdash;", "", obd2ecu.empty());
   c.input_select_option("can1", "can1", obd2ecu == "can1");
@@ -1050,12 +1286,524 @@ void OvmsWebServer::HandleCfgAutoInit(PageEntry_t& p, PageContext_t& c)
   c.input_select_option("can3", "can3", obd2ecu == "can3");
   c.input_select_end(
     "<p>OBD2ECU translates OVMS to OBD2 metrics, i.e. to drive standard ECU displays</p>");
-  
+
   c.input_checkbox("Start server V2", "server_v2", server_v2);
   c.input_checkbox("Start server V3", "server_v3", server_v3);
+
+  c.print(
+    "<div class=\"form-group\">"
+      "<div class=\"col-sm-offset-3 col-sm-9\">"
+        "<button type=\"submit\" class=\"btn btn-default\" name=\"action\" value=\"save\">Save</button> "
+        "<button type=\"submit\" class=\"btn btn-default\" name=\"action\" value=\"save-reboot\">Save &amp; reboot</button> "
+      "</div>"
+    "</div>");
+  c.form_end();
+  c.panel_end();
+  c.done();
+}
+
+
+/**
+ * HandleCfgFirmware: OTA firmware update & boot setup (URL /cfg/firmware)
+ */
+void OvmsWebServer::HandleCfgFirmware(PageEntry_t& p, PageContext_t& c)
+{
+  std::string cmdres, mru;
+  std::string action;
+  ota_info info;
+  bool auto_enable;
+  std::string auto_hour, server, tag;
+  std::string output;
+
+  if (c.method == "POST") {
+    // process form submission:
+    bool error = false, showform = true, reboot = false;
+    action = c.getvar("action");
+    
+    auto_enable = (c.getvar("auto_enable") == "yes");
+    auto_hour = c.getvar("auto_hour");
+    server = c.getvar("server");
+    tag = c.getvar("tag");
+    
+    if (action.substr(0,3) == "set") {
+      
+      if (startsWith(server, "https:")) {
+        error = true;
+        output += "<p>Sorry, https not yet supported!</p>";
+      }
+      
+      info.partition_boot = c.getvar("boot_old");
+      std::string partition_boot = c.getvar("boot");
+      if (partition_boot != info.partition_boot) {
+        cmdres = ExecuteCommand("ota boot " + partition_boot);
+        if (cmdres.find("Error:") != std::string::npos)
+          error = true;
+        output += "<p><samp>" + cmdres + "</samp></p>";
+      }
+      else {
+        output += "<p>Boot partition unchanged.</p>";
+      }
+      
+      if (!error) {
+        MyConfig.SetParamValueBool("auto", "ota", auto_enable);
+        MyConfig.SetParamValue("ota", "auto.hour", auto_hour);
+        MyConfig.SetParamValue("ota", "server", server);
+        MyConfig.SetParamValue("ota", "tag", tag);
+      }
+      
+      if (!error && action == "set-reboot")
+        reboot = true;
+    }
+    else if (action == "reboot") {
+      reboot = true;
+    }
+    else {
+      error = true;
+      output = "<p>Unknown action.</p>";
+    }
+    
+    // output result:
+    if (error) {
+      output = "<p class=\"lead\">Error!</p>" + output;
+      c.head(400);
+      c.alert("danger", output.c_str());
+    }
+    else {
+      c.head(200);
+      output = "<p class=\"lead\">OK!</p>" + output;
+      c.alert("success", output.c_str());
+      if (reboot)
+        OutputReboot(p, c);
+      if (reboot || !showform) {
+        c.done();
+        return;
+      }
+    }
+  }
+  else {
+    // read config:
+    auto_enable = MyConfig.GetParamValueBool("auto", "ota", true);
+    auto_hour = MyConfig.GetParamValue("ota", "auto.hour", "2");
+    server = MyConfig.GetParamValue("ota", "server");
+    tag = MyConfig.GetParamValue("ota", "tag");
+    
+    // generate form:
+    c.head(200);
+  }
+
+  // read status:
+  MyOTA.GetStatus(info);
   
+  c.panel_start("primary", "Firmware setup &amp; update");
+  c.form_start(p.uri);
+
+  c.input_info("Firmware version", info.version_firmware.c_str());
+  output = info.version_server;
+  output.append(" <button type=\"button\" class=\"btn btn-default\" data-toggle=\"modal\" data-target=\"#version-dialog\">Version info</button>");
+  c.input_info("…available", output.c_str());
+  
+  c.print(
+    "<ul class=\"nav nav-tabs\">"
+      "<li class=\"active\"><a data-toggle=\"tab\" href=\"#tab-setup\">Setup</a></li>"
+      "<li><a data-toggle=\"tab\" href=\"#tab-flash-http\">Flash <span class=\"hidden-xs\">from</span> web</a></li>"
+      "<li><a data-toggle=\"tab\" href=\"#tab-flash-vfs\">Flash <span class=\"hidden-xs\">from</span> file</a></li>"
+    "</ul>"
+    "<div class=\"tab-content\">"
+      "<div id=\"tab-setup\" class=\"tab-pane fade in active section-setup\">");
+
+  // Boot partition:
+  c.input_info("Running partition", info.partition_running.c_str());
+  c.printf("<input type=\"hidden\" name=\"boot_old\" value=\"%s\">", _attr(info.partition_boot));
+  c.input_select_start("Boot from", "boot");
+  c.input_select_option("Factory image", "factory", (info.partition_boot == "factory"));
+  c.input_select_option("OTA_0 image", "ota_0", (info.partition_boot == "ota_0"));
+  c.input_select_option("OTA_1 image", "ota_1", (info.partition_boot == "ota_1"));
+  c.input_select_end();
+  
+  // Server & auto update:
+  c.print("<hr>");
+  c.input_checkbox("Enable auto update", "auto_enable", auto_enable,
+    "<p>Strongly recommended: if enabled, the module will perform automatic firmware updates within the hour specified, but only if a wifi network is available.</p>");
+  c.input("number", "Auto update hour", "auto_hour", auto_hour.c_str(), "Default: 2", NULL, "min=\"0\" max=\"23\" step=\"1\"");
+  c.print(
+    "<datalist id=\"server-list\">"
+      "<option value=\"api.openvehicles.com/firmware/ota\">"
+      "<option value=\"ovms.dexters-web.de/firmware/ota\">"
+    "</datalist>"
+    "<datalist id=\"tag-list\">"
+      "<option value=\"main\">"
+      "<option value=\"edge\">"
+    "</datalist>"
+    );
+  c.input_text("Update server", "server", server.c_str(), "Specify or select from list (clear to see all options)",
+    "<p>Default is <code>api.openvehicles.com/firmware/ota</code>. Note: currently only http is supported.</p>",
+    "list=\"server-list\"");
+  c.input_text("Version tag", "tag", tag.c_str(), "Specify or select from list (clear to see all options)",
+    "<p>Default is <code>main</code> for standard releases. Use <code>edge</code> for bleeding edge developer builds.</p>",
+    "list=\"tag-list\"");
+  
+  c.print(
+    "<hr>"
+    "<div class=\"form-group\">"
+      "<div class=\"col-sm-offset-3 col-sm-9\">"
+        "<button type=\"submit\" class=\"btn btn-default\" name=\"action\" value=\"set\">Set</button> "
+        "<button type=\"submit\" class=\"btn btn-default\" name=\"action\" value=\"set-reboot\">Set &amp; reboot</button> "
+        "<button type=\"submit\" class=\"btn btn-default\" name=\"action\" value=\"reboot\">Reboot</button> "
+      "</div>"
+    "</div>");
+
+  c.print(
+      "</div>"
+      "<div id=\"tab-flash-http\" class=\"tab-pane fade section-flash\">");
+
+  // warn about modem / AP connection:
+  if (netif_default) {
+    if (netif_default->name[0] == 'a' && netif_default->name[1] == 'p') {
+      c.alert("warning",
+        "<p class=\"lead\"><strong>No internet access.</strong></p>"
+        "<p>The module is running in wifi AP mode without modem, so flashing from a public server is currently not possible.</p>"
+        "<p>You can still flash from an AP network local IP address (<code>192.168.4.x</code>).</p>");
+    }
+    else if (netif_default->name[0] == 'p' && netif_default->name[1] == 'p') {
+      c.alert("warning",
+        "<p class=\"lead\"><strong>Using modem connection for internet.</strong></p>"
+        "<p>Downloads from public servers will currently be done via cellular network. Be aware update files are &gt;2 MB, "
+        "which may exceed your data plan and need some time depending on your link speed.</p>"
+        "<p>You can also flash locally from a wifi network IP address.</p>");
+    }
+  }
+  
+  // Flash HTTP:
+  mru = MyConfig.GetParamValue("ota", "http.mru");
+  c.input_text("HTTP URL", "flash_http", mru.c_str(),
+    "optional: URL of firmware file",
+    "<p>Leave empty to download the latest firmware from the update server. "
+    "Note: currently only http is supported.</p>", "list=\"urls\"");
+
+  c.print("<datalist id=\"urls\">");
+  if (mru != "")
+    c.printf("<option value=\"%s\">", c.encode_html(mru).c_str());
+  c.print("</datalist>");
+
+  c.input_button("default", "Flash now", "action", "flash-http");
+  
+  c.print(
+      "</div>"
+      "<div id=\"tab-flash-vfs\" class=\"tab-pane fade section-flash\">");
+
+  // Flash VFS:
+  mru = MyConfig.GetParamValue("ota", "vfs.mru");
+  c.input_info("Auto flash",
+    "<ol>"
+      "<li>Place the file <code>ovms3.bin</code> in the SD root directory.</li>"
+      "<li>Insert the SD card, wait until the module reboots.</li>"
+      "<li>Note: after processing the file will be renamed to <code>ovms3.done</code>.</li>"
+    "</ol>");
+  c.input_info("Upload",
+    "Not yet implemented. Please copy your update file to an SD card and enter the path below.");
+  c.input_text("File path", "flash_vfs", mru.c_str(),
+    "Path to firmware file", "<p>SD card root: <code>/sd/</code></p>", "list=\"files\"");
+  
+  c.print("<datalist id=\"files\">");
+  if (mru != "")
+    c.printf("<option value=\"%s\">", c.encode_html(mru).c_str());
+  DIR *dir;
+  struct dirent *dp;
+  if ((dir = opendir("/sd")) != NULL) {
+    while ((dp = readdir(dir)) != NULL) {
+      if (strstr(dp->d_name, ".bin") || strstr(dp->d_name, ".done"))
+        c.printf("<option value=\"/sd/%s\">", c.encode_html(dp->d_name).c_str());
+    }
+    closedir(dir);
+  }
+  c.print("</datalist>");
+  
+  c.input_button("default", "Flash now", "action", "flash-vfs");
+
+  c.print(
+      "</div>"
+    "</div>");
+
+  c.form_end();
+  c.panel_end(
+    "<p>The module can store up to three firmware images in a factory and two OTA partitions.</p>"
+    "<p>Flashing from web or file writes alternating to the OTA partitions, the factory partition remains unchanged.</p>"
+    "<p>You can flash the factory partition via USB, see developer manual for details.</p>");
+
+  c.printf(
+    "<div class=\"modal fade\" id=\"version-dialog\" role=\"dialog\" data-backdrop=\"static\" data-keyboard=\"false\">"
+      "<div class=\"modal-dialog modal-lg\">"
+        "<div class=\"modal-content\">"
+          "<div class=\"modal-header\">"
+            "<button type=\"button\" class=\"close\" data-dismiss=\"modal\">&times;</button>"
+            "<h4 class=\"modal-title\">Version info %s</h4>"
+          "</div>"
+          "<div class=\"modal-body\">"
+            "<pre>%s</pre>"
+          "</div>"
+          "<div class=\"modal-footer\">"
+            "<button type=\"button\" class=\"btn btn-default\" data-dismiss=\"modal\">Close</button>"
+          "</div>"
+        "</div>"
+      "</div>"
+    "</div>"
+    , _html(info.version_server)
+    , _html(info.changelog_server));
+
+  c.print(
+    "<div class=\"modal fade\" id=\"flash-dialog\" role=\"dialog\" data-backdrop=\"static\" data-keyboard=\"false\">"
+      "<div class=\"modal-dialog modal-lg\">"
+        "<div class=\"modal-content\">"
+          "<div class=\"modal-header\">"
+            "<button type=\"button\" class=\"close\" data-dismiss=\"modal\">&times;</button>"
+            "<h4 class=\"modal-title\">Flashing…</h4>"
+          "</div>"
+          "<div class=\"modal-body\">"
+            "<pre id=\"output\"></pre>"
+          "</div>"
+          "<div class=\"modal-footer\">"
+            "<button type=\"button\" class=\"btn btn-default action-reboot\">Reboot now</button>"
+            "<button type=\"button\" class=\"btn btn-default action-close\">Close</button>"
+          "</div>"
+        "</div>"
+      "</div>"
+    "</div>"
+    "<script>"
+      "function setloading(sel, on){"
+        "$(sel+\" button\").prop(\"disabled\", on);"
+        "if (on) $(sel).addClass(\"loading\");"
+        "else $(sel).removeClass(\"loading\");"
+      "}"
+      "$(\".section-flash button\").on(\"click\", function(ev){"
+        "var action = $(this).attr(\"value\");"
+        "$(\"#output\").text(\"Processing… (do not interrupt, may take some minutes)\\n\");"
+        "setloading(\"#flash-dialog\", true);"
+        "$(\"#flash-dialog\").modal(\"show\");"
+        "if (action == \"flash-http\") {"
+          "var flash_http = $(\"input[name=flash_http]\").val();"
+          "loadcmd(\"ota flash http \" + flash_http, \"+#output\").done(function(resp){"
+            "setloading(\"#flash-dialog\", false);"
+          "});"
+        "}"
+        "else if (action == \"flash-vfs\") {"
+          "var flash_vfs = $(\"input[name=flash_vfs]\").val();"
+          "loadcmd(\"ota flash vfs \" + flash_vfs, \"+#output\").done(function(resp){"
+            "setloading(\"#flash-dialog\", false);"
+          "});"
+        "}"
+        "else {"
+          "$(\"#output\").text(\"Unknown action.\");"
+          "setloading(\"#flash-dialog\", false);"
+        "}"
+        "ev.stopPropagation();"
+        "return false;"
+      "});"
+      "$(\".action-reboot\").on(\"click\", function(ev){"
+        "$(\"#flash-dialog\").removeClass(\"fade\").modal(\"hide\");"
+        "loaduri(\"#main\", \"post\", \"/cfg/firmware\", { \"action\": \"reboot\" });"
+      "});"
+      "$(\".action-close\").on(\"click\", function(ev){"
+        "$(\"#flash-dialog\").removeClass(\"fade\").modal(\"hide\");"
+        "loaduri(\"#main\", \"get\", \"/cfg/firmware\");"
+      "});"
+    "</script>");
+
+  c.done();
+}
+
+
+/**
+ * HandleCfgLogging: configure logging (URL /cfg/logging)
+ */
+void OvmsWebServer::HandleCfgLogging(PageEntry_t& p, PageContext_t& c)
+{
+  std::string error;
+  OvmsConfigParam* param = MyConfig.CachedParam("log");
+  ConfigParamMap pmap;
+  int i, max;
+  char buf[100];
+  std::string file_path, tag, level;
+
+  if (c.method == "POST") {
+    // process form submission:
+    
+    pmap["file.enable"] = (c.getvar("file_enable") == "yes") ? "yes" : "no";
+    if (c.getvar("file_maxsize") != "")
+      pmap["file.maxsize"] = c.getvar("file_maxsize");
+    
+    file_path = c.getvar("file_path");
+    pmap["file.path"] = file_path;
+    if (!startsWith(file_path, "/sd/") && !startsWith(file_path, "/store/"))
+      error += "<li data-input=\"file_path\">File must be on '/sd' or '/store'</li>";
+    
+    pmap["level"] = c.getvar("level");
+    max = atoi(c.getvar("levelmax").c_str());
+    for (i = 1; i <= max; i++) {
+      sprintf(buf, "tag_%d", i);
+      tag = c.getvar(buf);
+      if (tag == "") continue;
+      sprintf(buf, "level_%d", i);
+      level = c.getvar(buf);
+      if (level == "") continue;
+      snprintf(buf, sizeof(buf), "level.%s", tag.c_str());
+      pmap[buf] = level;
+    }
+    
+    if (error == "") {
+      // save:
+      param->m_map.clear();
+      param->m_map = std::move(pmap);
+      param->Save();
+
+      c.head(200);
+      c.alert("success", "<p class=\"lead\">Logging configuration saved.</p>");
+      OutputHome(p, c);
+      c.done();
+      return;
+    }
+
+    // output error, return to form:
+    error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
+    c.head(400);
+    c.alert("danger", error.c_str());
+  }
+  else {
+    // read configuration:
+    pmap = param->m_map;
+
+    // generate form:
+    c.head(200);
+  }
+
+  c.panel_start("primary", "Logging configuration");
+  c.form_start(p.uri);
+
+  c.input_checkbox("Enable file logging", "file_enable", pmap["file.enable"] == "yes");
+  c.input_text("Log file path", "file_path", pmap["file.path"].c_str(), "Enter path on /sd or /store",
+    "<p>Logging to SD card will start automatically on mount. Do not remove the SD card while logging is active.</p>"
+    "<p><button type=\"button\" class=\"btn btn-default\" data-target=\"#log-close-result\" data-cmd=\"log close\">Close log file for SD removal</button>"
+      "<samp id=\"log-close-result\" class=\"samp-inline\"></samp></p>");
+
+  std::string docroot = MyConfig.GetParamValue("http.server", "docroot", "/sd");
+  std::string download;
+  if (startsWith(pmap["file.path"], docroot)) {
+    std::string webpath = pmap["file.path"].substr(docroot.length());
+    download = "<a class=\"btn btn-default\" target=\"_blank\" href=\"" + webpath + "\">Open log file</a>";
+    auto p = webpath.find_last_of('/');
+    if (p != std::string::npos) {
+      std::string webdir = webpath.substr(0, p);
+      if (webdir != docroot)
+        download += " <a class=\"btn btn-default\" target=\"_blank\" href=\"" + webdir + "/\">Open directory</a>";
+    }
+  } else {
+    download = "You can access your logs with the browser if the path is in your webserver root (" + docroot + ").";
+  }
+  c.input_info("Download", download.c_str());
+
+  c.input("number", "Max file size", "file_maxsize", pmap["file.maxsize"].c_str(), "Default: 1024",
+    "<p>When exceeding the size, the log will be archived suffixed with date &amp; time and a new file will be started. 0 = disable</p>",
+    "min=\"0\" step=\"1\"", "kB");
+
+  auto gen_options = [&c](std::string level) {
+    c.printf(
+        "<option value=\"none\" %s>No logging</option>"
+        "<option value=\"error\" %s>Errors</option>"
+        "<option value=\"warn\" %s>Warnings</option>"
+        "<option value=\"info\" %s>Info (default)</option>"
+        "<option value=\"debug\" %s>Debug</option>"
+        "<option value=\"verbose\" %s>Verbose</option>"
+      , (level=="none") ? "selected" : ""
+      , (level=="error") ? "selected" : ""
+      , (level=="warn") ? "selected" : ""
+      , (level=="info"||level=="") ? "selected" : ""
+      , (level=="debug") ? "selected" : ""
+      , (level=="verbose") ? "selected" : "");
+  };
+  
+  c.input_select_start("Default level", "level");
+  gen_options(pmap["level"]);
+  c.input_select_end();
+  
+  c.print(
+    "<div class=\"form-group\">"
+    "<label class=\"control-label col-sm-3\">Component levels:</label>"
+    "<div class=\"col-sm-9\">"
+      "<div class=\"table-responsive\">"
+        "<table class=\"table\">"
+          "<thead>"
+            "<tr>"
+              "<th width=\"10%\"></th>"
+              "<th width=\"45%\">Component</th>"
+              "<th width=\"45%\">Level</th>"
+            "</tr>"
+          "</thead>"
+          "<tbody>");
+
+  max = 0;
+  for (auto &kv: pmap) {
+    if (!startsWith(kv.first, "level."))
+      continue;
+    max++;
+    tag = kv.first.substr(6);
+    c.printf(
+          "<tr>"
+            "<td><button type=\"button\" class=\"btn btn-danger\" onclick=\"delRow(this)\"><strong>✖</strong></button></td>"
+            "<td><input type=\"text\" class=\"form-control\" name=\"tag_%d\" value=\"%s\" placeholder=\"Enter component tag\""
+              " autocomplete=\"section-logging-tag\"></td>"
+            "<td><select class=\"form-control\" name=\"level_%d\" size=\"1\">"
+      , max, _attr(tag)
+      , max);
+    gen_options(kv.second);
+    c.print(
+            "</select></td>"
+          "</tr>");
+  }
+  
+  c.printf(
+          "<tr>"
+            "<td><button type=\"button\" class=\"btn btn-success\" onclick=\"addRow(this)\"><strong>✚</strong></button></td>"
+            "<td></td>"
+            "<td></td>"
+          "</tr>"
+        "</tbody>"
+      "</table>"
+      "<input type=\"hidden\" name=\"levelmax\" value=\"%d\">"
+    "</div>"
+    "</div>"
+    "</div>"
+    , max);
+
   c.input_button("default", "Save");
   c.form_end();
+
+  c.print(
+    "<script>"
+    "function delRow(el){"
+      "$(el).parent().parent().remove();"
+    "}"
+    "function addRow(el){"
+      "var counter = $('input[name=levelmax]');"
+      "var nr = Number(counter.val()) + 1;"
+      "var row = $('"
+          "<tr>"
+            "<td><button type=\"button\" class=\"btn btn-danger\" onclick=\"delRow(this)\"><strong>✖</strong></button></td>"
+            "<td><input type=\"text\" class=\"form-control\" name=\"tag_' + nr + '\" placeholder=\"Enter component tag\""
+              " autocomplete=\"section-logging-tag\"></td>"
+            "<td><select class=\"form-control\" name=\"level_' + nr + '\" size=\"1\">"
+              "<option value=\"none\">No logging</option>"
+              "<option value=\"error\">Errors</option>"
+              "<option value=\"warn\">Warnings</option>"
+              "<option value=\"info\" selected>Info (default)</option>"
+              "<option value=\"debug\">Debug</option>"
+              "<option value=\"verbose\">Verbose</option>"
+            "</select></td>"
+          "</tr>"
+        "');"
+      "$(el).parent().parent().before(row).prev().find(\"input\").first().focus();"
+      "counter.val(nr);"
+    "}"
+    "</script>");
+
   c.panel_end();
   c.done();
 }

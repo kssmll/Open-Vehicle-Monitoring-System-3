@@ -40,16 +40,6 @@
 #include "vehicle.h"
 
 
-// Embedded asset files (see component.mk):
-
-extern const uint8_t script_js_gz_start[]     asm("_binary_script_js_gz_start");
-extern const uint8_t script_js_gz_end[]       asm("_binary_script_js_gz_end");
-extern const uint8_t style_css_gz_start[]     asm("_binary_style_css_gz_start");
-extern const uint8_t style_css_gz_end[]       asm("_binary_style_css_gz_end");
-extern const uint8_t favicon_png_start[]      asm("_binary_favicon_png_start");
-extern const uint8_t favicon_png_end[]        asm("_binary_favicon_png_end");
-
-
 /**
  * encode_html: HTML encode value
  *   "  →  &quot;
@@ -143,7 +133,7 @@ void PageContext::panel_start(const char* type, const char* title) {
 }
 
 void PageContext::panel_end(const char* footer) {
-  mg_printf_http_chunk(nc, footer[0]
+  mg_printf_http_chunk(nc, (footer && footer[0])
     ? "</div><div class=\"panel-footer\">%s</div></div>"
     : "</div></div>"
     , footer);
@@ -220,7 +210,7 @@ void PageContext::input_select_end(const char* helptext /*=NULL*/) {
     , helptext ? "</span>" : "");
 }
 
-void PageContext::input_radio_start(const char* label, const char* name) {
+void PageContext::input_radiobtn_start(const char* label, const char* name) {
   mg_printf_http_chunk(nc,
     "<div class=\"form-group\">"
       "<label class=\"control-label col-sm-3\" for=\"input-%s\">%s:</label>"
@@ -229,7 +219,7 @@ void PageContext::input_radio_start(const char* label, const char* name) {
     , _attr(name), label, _attr(name));
 }
 
-void PageContext::input_radio_option(const char* name, const char* label, const char* value, bool selected) {
+void PageContext::input_radiobtn_option(const char* name, const char* label, const char* value, bool selected) {
   mg_printf_http_chunk(nc,
     "<label class=\"btn btn-default %s\">"
       "<input type=\"radio\" name=\"%s\" value=\"%s\" %s autocomplete=\"off\"> %s"
@@ -240,8 +230,31 @@ void PageContext::input_radio_option(const char* name, const char* label, const 
     , label);
 }
 
-void PageContext::input_radio_end(const char* helptext /*=NULL*/) {
+void PageContext::input_radiobtn_end(const char* helptext /*=NULL*/) {
   mg_printf_http_chunk(nc, "</div>%s%s%s</div></div>"
+    , helptext ? "<span class=\"help-block\">" : ""
+    , helptext ? helptext : ""
+    , helptext ? "</span>" : "");
+}
+
+void PageContext::input_radio_start(const char* label, const char* name) {
+  mg_printf_http_chunk(nc,
+    "<div class=\"form-group\">"
+      "<label class=\"control-label col-sm-3\" for=\"input-%s\">%s:</label>"
+      "<div class=\"col-sm-9\">"
+    , _attr(name), label, _attr(name));
+}
+
+void PageContext::input_radio_option(const char* name, const char* label, const char* value, bool selected) {
+  mg_printf_http_chunk(nc,
+    "<div class=\"radio\"><label><input type=\"radio\" name=\"%s\"" " value=\"%s\" %s>%s</label></div>"
+    , _attr(name), _attr(value)
+    , selected ? "checked" : ""
+    , label);
+}
+
+void PageContext::input_radio_end(const char* helptext /*=NULL*/) {
+  mg_printf_http_chunk(nc, "%s%s%s</div></div>"
     , helptext ? "<span class=\"help-block\">" : ""
     , helptext ? helptext : ""
     , helptext ? "</span>" : "");
@@ -308,14 +321,29 @@ void PageContext::input_slider(const char* label, const char* name, int size, co
     );
 }
 
-void PageContext::input_button(const char* type, const char* label) {
+void PageContext::input_button(const char* type, const char* label,
+    const char* name /*=NULL*/, const char* value /*=NULL*/) {
   mg_printf_http_chunk(nc,
     "<div class=\"form-group\">"
       "<div class=\"col-sm-offset-3 col-sm-9\">"
-        "<button type=\"submit\" class=\"btn btn-%s\">%s</button>"
+        "<button type=\"submit\" class=\"btn btn-%s\" %s%s%s %s%s%s>%s</button>"
       "</div>"
     "</div>"
-    , _attr(type), label);
+    , _attr(type)
+    , name ? "name=\"" : "", name ? _attr(name) : "", name ? "\"" : ""
+    , value ? "value=\"" : "", value ? _attr(value) : "", value ? "\"" : ""
+    , label);
+}
+
+void PageContext::input_info(const char* label, const char* text) {
+  mg_printf_http_chunk(nc,
+    "<div class=\"form-group\">"
+      "<label class=\"control-label col-sm-3\">%s:</label>"
+      "<div class=\"col-sm-9\">"
+        "<div class=\"form-control-static\">%s</div>"
+      "</div>"
+    "</div>"
+    , label, text);
 }
 
 void PageContext::alert(const char* type, const char* text) {
@@ -324,9 +352,10 @@ void PageContext::alert(const char* type, const char* text) {
     , _attr(type), text);
 }
 
-void PageContext::fieldset_start(const char* title) {
+void PageContext::fieldset_start(const char* title, const char* css_class /*=NULL*/) {
   mg_printf_http_chunk(nc,
-    "<fieldset><legend>%s</legend>"
+    "<fieldset class=\"%s\"><legend>%s</legend>"
+    , css_class ? css_class : ""
     , title);
 }
 
@@ -361,7 +390,7 @@ std::string OvmsWebServer::CreateMenu(PageContext_t& c)
     "<ul class=\"nav navbar-nav\">"
       + main;
   if (vehicle != "") {
-    std::string vehiclename = MyVehicleFactory.ActiveVehicleName();
+    std::string vehiclename = MyVehicleFactory.ActiveVehicleShortName();
     menu +=
       "<li class=\"dropdown\" id=\"menu-vehicle\">"
         "<a href=\"#\" class=\"dropdown-toggle\" data-toggle=\"dropdown\" role=\"button\" aria-haspopup=\"true\" aria-expanded=\"false\">"
@@ -381,6 +410,7 @@ std::string OvmsWebServer::CreateMenu(PageContext_t& c)
       "</li>"
     "</ul>"
     "<ul class=\"nav navbar-nav navbar-right\">"
+      "<li class=\"hidden-xs\"><a href=\"#\" class=\"toggle-fullscreen\">◱</a></li>"
       "<li class=\"hidden-xs\"><a href=\"#\" class=\"toggle-night\">◐</a></li>"
       + std::string(c.session
       ? "<li><a href=\"/logout\" target=\"#main\">Logout</a></li>"
@@ -397,9 +427,8 @@ std::string OvmsWebServer::CreateMenu(PageContext_t& c)
 
 void OvmsWebServer::OutputHome(PageEntry_t& p, PageContext_t& c)
 {
-  std::string main, config, vehicle;
-  
   // collect menu items:
+  std::string main, config, vehicle;
   for (PageEntry* e : MyWebServer.m_pagemap) {
     if (e->menu == PageMenu_Main)
       main += "<li><a class=\"btn btn-default\" href=\"" + std::string(e->uri) + "\" target=\"#main\">" + std::string(e->label) + "</a></li>";
@@ -407,6 +436,21 @@ void OvmsWebServer::OutputHome(PageEntry_t& p, PageContext_t& c)
       config += "<li><a class=\"btn btn-default\" href=\"" + std::string(e->uri) + "\" target=\"#main\">" + std::string(e->label) + "</a></li>";
     else if (e->menu == PageMenu_Vehicle)
       vehicle += "<li><a class=\"btn btn-default\" href=\"" + std::string(e->uri) + "\" target=\"#main\">" + std::string(e->label) + "</a></li>";
+  }
+  
+  // show setup warning:
+  std::string init_step = MyConfig.GetParamValue("module", "init");
+  if (init_step.empty()) {
+    c.alert("danger",
+      "<p class=\"lead\">Initial module setup:</p>"
+      "<p>Your module is currently in <strong>insecure factory default</strong> configuration.</p>"
+      "<p><a class=\"btn btn-success\" href=\"/cfg/init\" target=\"#main\">Start setup now</a></p>");
+  }
+  // show password warning:
+  else if (MyConfig.GetParamValue("password", "module").empty()) {
+    c.alert("danger",
+      "<p><strong>Warning:</strong> no admin password set. <strong>Web access is open to the public!</strong></p>"
+      "<p><a class=\"btn btn-success\" href=\"/cfg/password\" target=\"#main\">Change password now</a></p>");
   }
   
   c.panel_start("primary", "Home");
@@ -434,19 +478,23 @@ void OvmsWebServer::OutputHome(PageEntry_t& p, PageContext_t& c)
 
   c.panel_end();
   
-  // check admin password, show warning if unset:
-  if (MyConfig.GetParamValue("password", "module").empty()) {
-    c.alert("warning", "<p><strong>Warning:</strong> no admin password set. Web access is open to the public.</p>");
-  }
-  
   // check auto init, show warning if disabled:
-  if (!MyConfig.GetParamValueBool("auto", "init")) {
+  if (!MyConfig.GetParamValueBool("auto", "init", true)) {
     c.alert("warning", "<p><strong>Warning:</strong> auto start disabled. Check auto start configuration.</p>");
   }
 }
 
 void OvmsWebServer::HandleHome(PageEntry_t& p, PageContext_t& c)
 {
+  // redirect to setup wizard?
+  std::string init_step = MyConfig.GetParamValue("module", "init");
+  if (!init_step.empty() && init_step != "done") {
+    c.head(200);
+    c.print("<script>loaduri('#main', 'get', '/cfg/init');</script>");
+    c.done();
+    return;
+  }
+  
   c.head(200);
   c.alert("info", "<p class=\"lead\">Welcome to the OVMS web console.</p>");
   OutputHome(p, c);
@@ -487,6 +535,7 @@ void OvmsWebServer::HandleRoot(PageEntry_t& p, PageContext_t& c)
                 "<span class=\"icon-bar\"></span>"
               "</button>"
               "<button type=\"button\" class=\"navbar-toggle collapsed toggle-night\">◐</button>"
+              "<button type=\"button\" class=\"navbar-toggle collapsed toggle-fullscreen\">◱</button>"
               "<a class=\"navbar-brand\" href=\"/home\" target=\"#main\" title=\"Home\"><img alt=\"OVMS\" src=\"/apple-touch-icon.png\"></a>"
             "</div>"
             "<div role=\"menu\" id=\"menu\" class=\"navbar-collapse collapse\">");
@@ -517,9 +566,74 @@ void OvmsWebServer::HandleMenu(PageEntry_t& p, PageContext_t& c)
 
 
 /**
+ * OutputReboot: output reboot script
+ */
+void OvmsWebServer::OutputReboot(PageEntry_t& p, PageContext_t& c)
+{
+  c.alert("warning",
+    "<p class=\"lead\">Rebooting now.</p>"
+    "<p>Please wait a moment until the window reloads.</p>"
+    "<p id=\"dots\">•</p>"
+    "<script>"
+      "after(0.1, function(){"
+        "var data = { \"command\": \"module reset\" };"
+        "$.ajax({ \"type\": \"post\", \"url\": \"/api/execute\", \"data\": data,"
+          "\"timeout\": 60000,"
+          "\"beforeSend\": function(){"
+            "$(\"html\").addClass(\"loading\");"
+            "ws_inhibit = 10;"
+            "ws.close();"
+            "window.setInterval(function(){ $(\"#dots\").append(\"•\"); }, 1000);"
+          "},"
+          "\"complete\": function(){"
+            "location.reload();"
+          "},"
+        "});"
+      "});"
+    "</script>");
+}
+
+
+/**
+ * OutputReconnect: output reconnect script
+ */
+void OvmsWebServer::OutputReconnect(PageEntry_t& p, PageContext_t& c, const char* info /*=NULL*/)
+{
+  c.printf(
+    "<div class=\"alert alert-warning\">"
+    "<p class=\"lead\">%s</p>"
+    "<p>The window will automatically reload when the browser reconnects to the module.</p>"
+    "<p id=\"dots\">•</p>"
+    "<script>"
+      "$(\"html\").addClass(\"loading\");"
+      "ws_inhibit = 10;"
+      "if (ws) ws.close();"
+      "window.setInterval(function(){"
+        "if (ws && ws.readyState == ws.OPEN){"
+          "location.reload();"
+        "} else {"
+          "$(\"#dots\").append(\"•\");"
+        "}"
+      "}, 1000);"
+    "</script>"
+    , info ? info : "Reconnecting…");
+}
+
+
+/**
  * HandleAsset: output gzip assets
  * Note: no check for Accept-Encoding, we can't unzip & a modern browser is required anyway
  */
+
+extern const uint8_t script_js_gz_start[]     asm("_binary_script_js_gz_start");
+extern const uint8_t script_js_gz_end[]       asm("_binary_script_js_gz_end");
+extern const uint8_t charts_js_gz_start[]     asm("_binary_charts_js_gz_start");
+extern const uint8_t charts_js_gz_end[]       asm("_binary_charts_js_gz_end");
+extern const uint8_t style_css_gz_start[]     asm("_binary_style_css_gz_start");
+extern const uint8_t style_css_gz_end[]       asm("_binary_style_css_gz_end");
+extern const uint8_t favicon_png_start[]      asm("_binary_favicon_png_start");
+extern const uint8_t favicon_png_end[]        asm("_binary_favicon_png_end");
+
 void OvmsWebServer::HandleAsset(PageEntry_t& p, PageContext_t& c)
 {
   const uint8_t* data = NULL;
@@ -538,6 +652,12 @@ void OvmsWebServer::HandleAsset(PageEntry_t& p, PageContext_t& c)
     data = script_js_gz_start;
     size = script_js_gz_end - script_js_gz_start;
     mtime = MTIME_ASSETS_SCRIPT_JS;
+    type = "application/javascript";
+  }
+  else if (c.uri == "/assets/charts.js") {
+    data = charts_js_gz_start;
+    size = charts_js_gz_end - charts_js_gz_start;
+    mtime = MTIME_ASSETS_CHARTS_JS;
     type = "application/javascript";
   }
   else if (c.uri == "/favicon.ico" || c.uri == "/apple-touch-icon.png") {

@@ -51,12 +51,18 @@ void time_status(int verbosity, OvmsWriter* writer, OvmsCommand* cmd, int argc, 
   {
   time_t rawtime;
   time ( &rawtime );
+  char tb[64];
+  char* tz = getenv("TZ");
+
+  writer->printf("Time Zone:  %s\n", (tz!=NULL)?tz:"Not defined");
 
   struct tm* tmu = gmtime(&rawtime);
-  writer->printf("UTC Time:   %s", asctime(tmu));
+  if (strftime(tb, sizeof(tb), "%Y-%m-%d %H:%M:%S UTC", tmu) > 0)
+    writer->printf("UTC Time:   %s\n", tb);
 
   tmu = localtime(&rawtime);
-  writer->printf("Local Time: %s", asctime(tmu));
+  if (strftime(tb, sizeof(tb), "%Y-%m-%d %H:%M:%S %Z", tmu) > 0)
+    writer->printf("Local Time: %s\n", tb);
 
   writer->printf("Provider:   %s\n",(MyTime.m_current)?MyTime.m_current->m_provider:"None");
 
@@ -128,7 +134,7 @@ OvmsTime::OvmsTime()
   // Register our commands
   OvmsCommand* cmd_time = MyCommandApp.RegisterCommand("time","TIME framework",time_status, "", 0, 1);
   cmd_time->RegisterCommand("status","Show time status",time_status,"", 0, 0, false);
-  cmd_time->RegisterCommand("set","Set current UTC time",time_set,"<time>", 1, 1, false);
+  cmd_time->RegisterCommand("set","Set current UTC time",time_set,"<time>", 1, 1, true);
 
   #undef bind  // Kludgy, but works
   using std::placeholders::_1;
@@ -196,7 +202,7 @@ void OvmsTime::EventNetDown(std::string event, void* data)
 
 void OvmsTime::EventNetReconfigured(std::string event, void* data)
   {
-  ESP_LOGI(TAG, "Restarting SNTP client");
+  ESP_LOGI(TAG, "Network was reconfigured: restarting SNTP client");
   sntp_stop();
   sntp_init();
   }

@@ -37,6 +37,7 @@
 #include <set>
 #include <limits.h>
 #include "ovms.h"
+#include "ovms_mutex.h"
 #include "task_base.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -75,7 +76,7 @@ class OvmsWriter
 
   public:
     bool IsSecure();
-    void SetSecure(bool secure=true);
+    virtual void SetSecure(bool secure=true);
     bool IsMonitoring() { return m_monitoring; }
     void SetMonitoring(bool mon=true) { m_monitoring = mon; }
 
@@ -155,7 +156,7 @@ class OvmsCommandTask : public TaskBase
     static bool Terminator(OvmsWriter* writer, void* userdata, char ch);
     bool IsRunning() { return m_state == OCS_RunLoop; }
     bool IsTerminated() { return m_state == OCS_StopRequested; }
-  
+
   protected:
     int verbosity;
     OvmsWriter* writer;
@@ -186,14 +187,29 @@ class OvmsCommandApp
     char ** Complete(OvmsWriter* writer, int argc, const char * const * argv);
     void Execute(int verbosity, OvmsWriter* writer, int argc, const char * const * argv);
 
+  public:
+    void ConfigureLogging();
+    bool SetLogfile(std::string path);
+    void SetLoglevel(std::string tag, std::string level);
+    void EventHandler(std::string event, void* data);
+
+  private:
+    void CycleLogfile();
+    void ReadConfig();
+
   private:
     int LogBuffer(LogBuffers* lb, const char* fmt, va_list args);
-
+    OvmsMutex m_fsync_mutex;
+    
   private:
     OvmsCommand m_root;
     typedef std::set<OvmsWriter*> ConsoleSet;
     ConsoleSet m_consoles;
     PartialLogs m_partials;
+    FILE* m_logfile;
+    std::string m_logfile_path;
+    size_t m_logfile_size;
+    size_t m_logfile_maxsize;
   };
 
 extern OvmsCommandApp MyCommandApp;

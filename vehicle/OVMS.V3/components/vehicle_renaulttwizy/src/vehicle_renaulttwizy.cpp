@@ -26,7 +26,7 @@
 #include "ovms_log.h"
 static const char *TAG = "v-twizy";
 
-#define VERSION "0.11.0"
+#define VERSION "0.15.3"
 
 #include <stdio.h>
 #include <string>
@@ -89,9 +89,6 @@ OvmsVehicleRenaultTwizy::OvmsVehicleRenaultTwizy()
   MyConfig.RegisterParam("xrt", "Renault Twizy", true, true);
   ConfigChanged(NULL);
   
-  // init can bus:
-  RegisterCanBus(1, CAN_MODE_ACTIVE, CAN_SPEED_500KBPS);
-  
   // init metrics:
   if (m_modifier == 0) {
     m_modifier = MyMetrics.RegisterModifier();
@@ -102,13 +99,6 @@ OvmsVehicleRenaultTwizy::OvmsVehicleRenaultTwizy()
   // init commands:
   cmd_xrt = MyCommandApp.RegisterCommand("xrt", "Renault Twizy", NULL, "", 0, 0, true);
   
-  // init subsystems:
-  BatteryInit();
-  PowerInit();
-  ChargeInit();
-  m_sevcon = new SevconClient(this);
-  WebInit();
-  
   // init event listener:
   using std::placeholders::_1;
   using std::placeholders::_2;
@@ -117,6 +107,20 @@ OvmsVehicleRenaultTwizy::OvmsVehicleRenaultTwizy()
   // require GPS:
   MyEvents.SignalEvent("vehicle.require.gps", NULL);
   MyEvents.SignalEvent("vehicle.require.gpstime", NULL);
+
+  // init subsystems:
+  BatteryInit();
+  PowerInit();
+  ChargeInit();
+  WebInit();
+  
+  // init can bus:
+  RegisterCanBus(1, CAN_MODE_ACTIVE, CAN_SPEED_500KBPS);
+  
+  // init SEVCON connection:
+  m_sevcon = new SevconClient(this);
+  
+  m_ready = true;
 }
 
 OvmsVehicleRenaultTwizy::~OvmsVehicleRenaultTwizy()
@@ -134,12 +138,20 @@ OvmsVehicleRenaultTwizy::~OvmsVehicleRenaultTwizy()
     delete m_sevcon;
 }
 
+const char* OvmsVehicleRenaultTwizy::VehicleShortName()
+{
+  return "Twizy";
+}
+
 
 /**
  * ConfigChanged: reload single/all configuration variables
  */
 void OvmsVehicleRenaultTwizy::ConfigChanged(OvmsConfigParam* param)
 {
+  if (param && param->GetName() != "xrt")
+    return;
+  
   ESP_LOGD(TAG, "Renault Twizy reload configuration");
   
   // Instances:
@@ -323,7 +335,10 @@ OvmsVehicleRenaultTwizy::vehicle_command_t OvmsVehicleRenaultTwizy::ProcessMsgCo
     
     case CMD_BatteryStatus:
       // send complete set of battery status records:
+      if (!BatteryLock(100))
+        return Fail;
       BatterySendDataUpdate(true);
+      BatteryUnlock();
       return Success;
     
     case CMD_PowerUsageNotify:

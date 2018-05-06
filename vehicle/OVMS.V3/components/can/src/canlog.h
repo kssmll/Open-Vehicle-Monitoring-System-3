@@ -65,7 +65,7 @@ class canlog
     static canlog* Instantiate(const char* type);
   
   public:
-    canlog(int queuesize=30);
+    canlog(int queuesize=100);
     virtual ~canlog();
     virtual const char* GetType() { return ""; }
     static void RxTask(void* context);
@@ -76,6 +76,7 @@ class canlog
     virtual void Close();
     virtual bool IsOpen() { return (m_file != NULL); }
     virtual std::string GetPath() { return m_path; }
+    virtual void MountListener(std::string event, void* data);
 
   public:
     // Utils:

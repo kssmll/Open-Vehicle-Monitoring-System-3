@@ -42,6 +42,7 @@
 #include "crypt_rc4.h"
 #include "ovms_metrics.h"
 #include "ovms_notify.h"
+#include "ovms_mutex.h"
 
 #define OVMS_PROTOCOL_V2_TOKENSIZE 22
 
@@ -54,8 +55,9 @@ class OvmsServerV2 : public OvmsServer
   public:
     virtual void SetPowerMode(PowerMode powermode);
     void Connect();
-    void SendLogin();
+    void SendLogin(struct mg_connection *nc);
     void Disconnect();
+    void Reconnect(int connretry);
     size_t IncomingData(uint8_t* data, size_t len);
 
   protected:
@@ -63,7 +65,6 @@ class OvmsServerV2 : public OvmsServer
     void ProcessCommand(const char* payload);
     void Transmit(const std::string& message);
     void Transmit(const char* message);
-    void SetStatus(const char* status, bool fault=false);
 
   protected:
     void TransmitMsgStat(bool always = false);
@@ -94,8 +95,24 @@ class OvmsServerV2 : public OvmsServer
     void Ticker1(std::string event, void* data);
 
   public:
+    enum State
+      {
+      Undefined = 0,
+      WaitNetwork,
+      ConnectWait,
+      Connecting,
+      Authenticating,
+      Connected,
+      Disconnected,
+      WaitReconnect
+      };
+    State m_state;
     std::string m_status;
+    void SetStatus(const char* status, bool fault=false, State newstate=Undefined);
+
+  public:
     struct mg_connection *m_mgconn;
+    OvmsMutex m_mgconn_mutex;
     int m_connretry;
     bool m_loggedin;
 
@@ -134,6 +151,7 @@ class OvmsServerV2 : public OvmsServer
     bool m_pending_notify_alert;
     bool m_pending_notify_data;
     uint32_t m_pending_notify_data_last;
+    int m_pending_notify_data_retransmit;
   };
 
 class OvmsServerV2Init
@@ -144,5 +162,6 @@ class OvmsServerV2Init
   };
 
 extern OvmsServerV2Init MyOvmsServerV2Init;
+extern OvmsServerV2 *MyOvmsServerV2;
 
 #endif //#ifndef __OVMS_SERVER_V2_H__

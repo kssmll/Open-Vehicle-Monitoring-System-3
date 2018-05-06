@@ -27,7 +27,7 @@
 */
 
 #include "ovms_log.h"
-static const char *TAG = "webserver";
+static const char *TAG = "websocket";
 
 #include <string.h>
 #include <stdio.h>
@@ -59,6 +59,7 @@ WebSocketHandler::WebSocketHandler(mg_connection* nc, size_t modifier)
   
   m_modifier = modifier;
   m_jobqueue = xQueueCreate(30, sizeof(WebSocketTxJob));
+  m_jobqueue_overflow = 0;
   m_mutex = xSemaphoreCreateMutex();
   m_job.type = WSTX_None;
   m_sent = m_ack = 0;
@@ -66,6 +67,8 @@ WebSocketHandler::WebSocketHandler(mg_connection* nc, size_t modifier)
 
 WebSocketHandler::~WebSocketHandler()
 {
+  while (xQueueReceive(m_jobqueue, &m_job, 0) == pdTRUE)
+    FreeTxJob(m_job);
   vQueueDelete(m_jobqueue);
   vSemaphoreDelete(m_mutex);
 }
@@ -84,60 +87,6 @@ bool WebSocketHandler::Lock(TickType_t xTicksToWait)
 void WebSocketHandler::Unlock()
 {
   xSemaphoreGive(m_mutex);
-}
-
-
-void WebSocketHandler::AddTxJob(WebSocketTxJob job)
-{
-  if (xQueueSend(m_jobqueue, &job, 0) != pdTRUE) {
-    ESP_LOGW(TAG, "WebSocketHandler[%p]: job queue overflow", this);
-  }
-}
-
-bool WebSocketHandler::GetNextTxJob()
-{
-  if (xQueueReceive(m_jobqueue, &m_job, 0) == pdTRUE) {
-    // init new job state:
-    m_sent = m_ack = 0;
-    return true;
-  } else {
-    return false;
-  }
-}
-
-
-void WebSocketHandler::InitTx()
-{
-  if (m_job.type != WSTX_None)
-    return;
-  
-  if (!Lock(0))
-    return;
-  
-  // begin next job if idle:
-  while (m_job.type == WSTX_None) {
-    if (!GetNextTxJob())
-      break;
-    ProcessTxJob();
-  }
-  
-  Unlock();
-}
-
-void WebSocketHandler::PollTx()
-{
-  m_ack = m_sent;
-  
-  if (!Lock(0))
-    return;
-  
-  do {
-    // process current job:
-    ProcessTxJob();
-    // check next if done:
-  } while (m_job.type == WSTX_None && GetNextTxJob());
-  
-  Unlock();
 }
 
 
@@ -227,12 +176,82 @@ void WebSocketHandler::ProcessTxJob()
 }
 
 
-void WebSocketHandler::HandleEvent(int ev, void* p)
+void WebSocketHandler::FreeTxJob(WebSocketTxJob &job)
+{
+  switch (job.type) {
+    case WSTX_Event:
+      if (job.event)
+        free(job.event);
+      break;
+    default:
+      break;
+  }
+}
+
+
+bool WebSocketHandler::AddTxJob(WebSocketTxJob job, bool init_tx)
+{
+  if (xQueueSend(m_jobqueue, &job, 0) != pdTRUE) {
+    ++m_jobqueue_overflow;
+    if (m_jobqueue_overflow == 1)
+      ESP_LOGW(TAG, "WebSocketHandler[%p]: job queue overflow detected", this);
+    return false;
+  }
+  else {
+    if (m_jobqueue_overflow) {
+      ESP_LOGW(TAG, "WebSocketHandler[%p]: job queue overflow resolved, %d drops", this, m_jobqueue_overflow);
+      m_jobqueue_overflow = 0;
+    }
+    if (init_tx && uxQueueMessagesWaiting(m_jobqueue) == 1)
+      RequestPoll();
+    return true;
+  }
+}
+
+bool WebSocketHandler::GetNextTxJob()
+{
+  if (xQueueReceive(m_jobqueue, &m_job, 0) == pdTRUE) {
+    // init new job state:
+    m_sent = m_ack = 0;
+    return true;
+  } else {
+    return false;
+  }
+}
+
+
+void WebSocketHandler::InitTx()
+{
+  if (m_job.type != WSTX_None)
+    return;
+  
+  // begin next job if idle:
+  while (m_job.type == WSTX_None) {
+    if (!GetNextTxJob())
+      break;
+    ProcessTxJob();
+  }
+}
+
+void WebSocketHandler::ContinueTx()
+{
+  m_ack = m_sent;
+  
+  do {
+    // process current job:
+    ProcessTxJob();
+    // check next if done:
+  } while (m_job.type == WSTX_None && GetNextTxJob());
+}
+
+
+int WebSocketHandler::HandleEvent(int ev, void* p)
 {
   switch (ev)
   {
-    case MG_EV_WEBSOCKET_FRAME:   // websocket message received
+    case MG_EV_WEBSOCKET_FRAME:
     {
+      // websocket message received
       websocket_message* wm = (websocket_message*) p;
       std::string msg;
       msg.assign((char*) wm->data, wm->size);
@@ -241,13 +260,23 @@ void WebSocketHandler::HandleEvent(int ev, void* p)
       break;
     }
     
-    case MG_EV_SEND:              // last transmission has finished
-      PollTx();
+    case MG_EV_POLL:
+      // check for new transmission
+      //ESP_LOGV(TAG, "WebSocketHandler[%p] EV_POLL qlen=%d jobtype=%d sent=%d ack=%d", this, uxQueueMessagesWaiting(m_jobqueue), m_job.type, m_sent, m_ack);
+      InitTx();
+      break;
+    
+    case MG_EV_SEND:
+      // last transmission has finished
+      //ESP_LOGV(TAG, "WebSocketHandler[%p] EV_SEND qlen=%d jobtype=%d sent=%d ack=%d", this, uxQueueMessagesWaiting(m_jobqueue), m_job.type, m_sent, m_ack);
+      ContinueTx();
       break;
     
     default:
       break;
   }
+  
+  return ev;
 }
 
 
@@ -276,18 +305,20 @@ WebSocketHandler* OvmsWebServer::CreateWebSocketHandler(mg_connection* nc)
   
   // create handler:
   WebSocketHandler* handler = new WebSocketHandler(nc, m_client_slots[i].modifier);
+  m_client_slots[i].handler = handler;
+  
+  // start ticker:
+  m_client_cnt++;
+  if (xTimerIsTimerActive(m_update_ticker) == pdFALSE)
+    xTimerStart(m_update_ticker, 0);
+  
+  ESP_LOGD(TAG, "WebSocket connection %p opened; %d clients active", handler, m_client_cnt);
+  
+  xSemaphoreGive(m_client_mutex);
   
   // initial tx:
   handler->AddTxJob({ WSTX_MetricsAll, NULL });
-  handler->InitTx();
   
-  m_client_slots[i].handler = handler;
-  m_client_cnt++;
-  if (m_client_cnt == 1)
-    xTimerStart(m_update_ticker, 0);
-  ESP_LOGD(TAG, "WebSocket connection opened; %d clients active", m_client_cnt);
-  
-  xSemaphoreGive(m_client_mutex);
   return handler;
 }
 
@@ -300,14 +331,16 @@ void OvmsWebServer::DestroyWebSocketHandler(WebSocketHandler* handler)
   for (int i=0; i<m_client_slots.size(); i++) {
     if (m_client_slots[i].handler == handler) {
       
+      // stop ticker:
+      m_client_cnt--;
+      if (m_client_cnt == 0)
+        xTimerStop(m_update_ticker, 0);
+      
       // destroy handler:
       m_client_slots[i].handler = NULL;
       delete handler;
       
-      m_client_cnt--;
-      if (m_client_cnt == 0)
-        xTimerStop(m_update_ticker, 0);
-      ESP_LOGD(TAG, "WebSocket connection closed; %d clients active", m_client_cnt);
+      ESP_LOGD(TAG, "WebSocket connection %p closed; %d clients active", handler, m_client_cnt);
       
       break;
     }
@@ -318,10 +351,16 @@ void OvmsWebServer::DestroyWebSocketHandler(WebSocketHandler* handler)
 
 
 /**
- * EventListener: forward events to all websocket clients
+ * EventListener:
  */
 void OvmsWebServer::EventListener(std::string event, void* data)
 {
+  // ticker:
+  if (event == "ticker.1") {
+    CfgInitTicker();
+  }
+  
+  // forward events to all websocket clients:
   if (xSemaphoreTake(m_client_mutex, 0) != pdTRUE) {
     ESP_LOGW(TAG, "EventListener: can't lock client list, event update dropped");
     return;
@@ -329,7 +368,11 @@ void OvmsWebServer::EventListener(std::string event, void* data)
   
   for (auto slot: m_client_slots) {
     if (slot.handler) {
-      slot.handler->AddTxJob({ WSTX_Event, strdup(event.c_str()) });
+      WebSocketTxJob job = { WSTX_Event, strdup(event.c_str()) };
+      if (!slot.handler->AddTxJob(job, false))
+        free(job.event);
+      // Note: init_tx false to prevent mg_broadcast() deadlock on network events
+      //  and keep processing time low
     }
   }
   
@@ -349,10 +392,8 @@ void OvmsWebServer::UpdateTicker(TimerHandle_t timer)
   }
   
   for (auto slot: MyWebServer.m_client_slots) {
-    if (slot.handler) {
+    if (slot.handler)
       slot.handler->AddTxJob({ WSTX_MetricsUpdate, NULL });
-      slot.handler->InitTx();
-    }
   }
   
   xSemaphoreGive(MyWebServer.m_client_mutex);

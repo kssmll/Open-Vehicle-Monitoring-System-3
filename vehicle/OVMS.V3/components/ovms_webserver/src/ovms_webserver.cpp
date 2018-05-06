@@ -50,6 +50,9 @@ OvmsWebServer::OvmsWebServer()
 
   m_running = false;
   memset(m_sessions, 0, sizeof(m_sessions));
+  
+  // force init wizard timeout on reboot:
+  m_init_timeout = 5;
 
 #if MG_ENABLE_FILESYSTEM
   m_file_enable = true;
@@ -59,7 +62,7 @@ OvmsWebServer::OvmsWebServer()
   m_client_cnt = 0;
   m_client_mutex = xSemaphoreCreateMutex();
   m_update_ticker = xTimerCreate("Web client update ticker", 250 / portTICK_PERIOD_MS, pdTRUE, NULL, UpdateTicker);
-  
+
   // read config:
   MyConfig.RegisterParam("http.server", "Webserver", true, true);
   ConfigChanged("init", NULL);
@@ -72,11 +75,12 @@ OvmsWebServer::OvmsWebServer()
   MyEvents.RegisterEvent(TAG, "config.changed", std::bind(&OvmsWebServer::ConfigChanged, this, _1, _2));
   MyEvents.RegisterEvent(TAG, "config.mounted", std::bind(&OvmsWebServer::ConfigChanged, this, _1, _2));
   MyEvents.RegisterEvent(TAG, "*", std::bind(&OvmsWebServer::EventListener, this, _1, _2));
-  
+
   // register standard framework URIs:
   RegisterPage("/", "OVMS", HandleRoot);
   RegisterPage("/assets/style.css", "style.css", HandleAsset);
   RegisterPage("/assets/script.js", "script.js", HandleAsset);
+  RegisterPage("/assets/charts.js", "charts.js", HandleAsset);
   RegisterPage("/assets/bootstrap.min.css.map", "-", HandleAsset);
   RegisterPage("/favicon.ico", "favicon.ico", HandleAsset);
   RegisterPage("/apple-touch-icon.png", "apple-touch-icon.png", HandleAsset);
@@ -87,10 +91,12 @@ OvmsWebServer::OvmsWebServer()
   
   // register standard API calls:
   RegisterPage("/api/execute", "Execute command", HandleCommand, PageMenu_None, PageAuth_Cookie);
-  
+
   // register standard administration pages:
   RegisterPage("/status", "Status", HandleStatus, PageMenu_Main, PageAuth_Cookie);
   RegisterPage("/shell", "Shell", HandleShell, PageMenu_Main, PageAuth_Cookie);
+  RegisterPage("/dashboard", "Dashboard", HandleDashboard, PageMenu_Main, PageAuth_Cookie);
+  RegisterPage("/cfg/init", "Setup wizard", HandleCfgInit, PageMenu_None, PageAuth_Cookie);
   RegisterPage("/cfg/password", "Password", HandleCfgPassword, PageMenu_Config, PageAuth_Cookie);
   RegisterPage("/cfg/vehicle", "Vehicle", HandleCfgVehicle, PageMenu_Config, PageAuth_Cookie);
   RegisterPage("/cfg/wifi", "Wifi", HandleCfgWifi, PageMenu_Config, PageAuth_Cookie);
@@ -99,6 +105,8 @@ OvmsWebServer::OvmsWebServer()
   RegisterPage("/cfg/server/v3", "Server V3 (MQTT)", HandleCfgServerV3, PageMenu_Config, PageAuth_Cookie);
   RegisterPage("/cfg/webserver", "Webserver", HandleCfgWebServer, PageMenu_Config, PageAuth_Cookie);
   RegisterPage("/cfg/autostart", "Autostart", HandleCfgAutoInit, PageMenu_Config, PageAuth_Cookie);
+  RegisterPage("/cfg/firmware", "Firmware", HandleCfgFirmware, PageMenu_Config, PageAuth_Cookie);
+  RegisterPage("/cfg/logging", "Logging", HandleCfgLogging, PageMenu_Config, PageAuth_Cookie);
 }
 
 OvmsWebServer::~OvmsWebServer()
@@ -110,7 +118,12 @@ OvmsWebServer::~OvmsWebServer()
 void OvmsWebServer::NetManInit(std::string event, void* data)
 {
   // Only initialise server for WIFI connections
-  if (!MyNetManager.m_connected_wifi) return;
+  // TODO: Disabled as this introduces a network interface ordering issue. It
+  //       seems that the correct way to do this is to always start the mongoose
+  //       listener, but to filter incoming connections to check that the
+  //       destination address is a Wifi interface address.
+  // if (!(MyNetManager.m_connected_wifi || MyNetManager.m_wifi_ap))
+  //  return;
 
   m_running = true;
   ESP_LOGI(TAG,"Launching Web Server");
@@ -144,11 +157,11 @@ void OvmsWebServer::ConfigChanged(std::string event, void* data)
 #if MG_ENABLE_FILESYSTEM
   OvmsConfigParam* param = (OvmsConfigParam*) data;
   ESP_LOGD(TAG, "ConfigChanged: %s %s", event.c_str(), param ? param->GetName().c_str() : "");
-  
+
   if (!param || param->GetName() == "password") {
     UpdateGlobalAuthFile();
   }
-  
+
   if (!param || param->GetName() == "http.server") {
     // Instances:
     //    Name                Default                 Function
@@ -158,21 +171,21 @@ void OvmsWebServer::ConfigChanged(std::string event, void* data)
     //    auth.domain         ovms                    Default auth domain (digest realm)
     //    auth.file           .htpasswd               Per directory auth file (Note: no inheritance from parent dir!)
     //    auth.global         yes                     Use global auth for files (user "admin", module password)
-    
+
     if (m_file_opts.document_root)
       free((void*)m_file_opts.document_root);
     if (m_file_opts.auth_domain)
       free((void*)m_file_opts.auth_domain);
     if (m_file_opts.per_directory_auth_file)
       free((void*)m_file_opts.per_directory_auth_file);
-    
+
     m_file_enable =
       MyConfig.GetParamValueBool("http.server", "enable.files", true);
     m_file_opts.enable_directory_listing =
       MyConfig.GetParamValueBool("http.server", "enable.dirlist", true) ? "yes" : "no";
     m_file_opts.document_root =
       strdup(MyConfig.GetParamValue("http.server", "docroot", "/sd").c_str());
-    
+
     m_file_opts.auth_domain =
       strdup(MyConfig.GetParamValue("http.server", "auth.domain", "ovms").c_str());
     m_file_opts.per_directory_auth_file =
@@ -193,9 +206,9 @@ void OvmsWebServer::UpdateGlobalAuthFile()
 #if MG_ENABLE_FILESYSTEM
   if (!m_file_opts.global_auth_file || !m_file_opts.auth_domain)
     return;
-  
+
   std::string p = MyConfig.GetParamValue("password", "module");
-  
+
   if (p.empty())
   {
     unlink(m_file_opts.global_auth_file);
@@ -224,16 +237,16 @@ const std::string OvmsWebServer::MakeDigestAuth(const char* realm, const char* u
   line += realm;
   line += ":";
   line += password;
-  
+
   unsigned char digest[16];
   cs_md5_ctx md5_ctx;
   cs_md5_init(&md5_ctx);
   cs_md5_update(&md5_ctx, (const unsigned char*) line.data(), line.length());
   cs_md5_final(digest, &md5_ctx);
-  
+
   char hex[33];
   cs_to_hex(hex, digest, sizeof(digest));
-  
+
   line = username;
   line += ":";
   line += realm;
@@ -307,14 +320,15 @@ void OvmsWebServer::EventHandler(mg_connection *nc, int ev, void *p)
 {
   PageContext_t c;
   MgHandler* handler = (MgHandler*) nc->user_data;
-  
-  if (ev != MG_EV_POLL && ev != MG_EV_SEND)
-    ESP_LOGV(TAG, "EventHandler: conn=%p ev=%d p=%p rxbufsz=%d, txbufsz=%d", nc, ev, p, nc->recv_mbuf.size, nc->send_mbuf.size);
-  
+
+  //if (ev != MG_EV_POLL && ev != MG_EV_SEND)
+  //if (nc->user_data)
+  //  ESP_LOGV(TAG, "EventHandler: conn=%p handler=%p ev=%d p=%p rxbufsz=%d, txbufsz=%d", nc, nc->user_data, ev, p, nc->recv_mbuf.size, nc->send_mbuf.size);
+
   // call attached handler:
   if (handler)
-    handler->HandleEvent(ev, p);
-  
+    ev = handler->HandleEvent(ev, p);
+
   // framework handling:
   switch (ev)
   {
@@ -323,7 +337,7 @@ void OvmsWebServer::EventHandler(mg_connection *nc, int ev, void *p)
         MyWebServer.CreateWebSocketHandler(nc);
       }
       break;
-    
+
     case MG_EV_HTTP_REQUEST:                // standard HTTP request
       {
         c.nc = nc;
@@ -332,7 +346,7 @@ void OvmsWebServer::EventHandler(mg_connection *nc, int ev, void *p)
         c.method.assign(c.hm->method.p, c.hm->method.len);
         c.uri.assign(c.hm->uri.p, c.hm->uri.len);
         ESP_LOGI(TAG, "HTTP %s %s", c.method.c_str(), c.uri.c_str());
-        
+
         PageEntry* page = MyWebServer.FindPage(c.uri.c_str());
         if (page) {
           // serve by page handler:
@@ -356,7 +370,7 @@ void OvmsWebServer::EventHandler(mg_connection *nc, int ev, void *p)
         }
       }
       break;
-    
+
     case MG_EV_CLOSE:                       // connection has been closed
       {
         if (handler) {
@@ -367,7 +381,7 @@ void OvmsWebServer::EventHandler(mg_connection *nc, int ev, void *p)
         }
       }
       break;
-    
+
     case MG_EV_TIMER:
       {
         // Perform session maintenance:
@@ -375,7 +389,7 @@ void OvmsWebServer::EventHandler(mg_connection *nc, int ev, void *p)
         mg_set_timer(nc, mg_time() + SESSION_CHECK_INTERVAL);
       }
       break;
-    
+
     default:
       break;
   }
@@ -416,12 +430,42 @@ void PageEntry::Serve(PageContext_t& c)
     }
   }
 #endif //MG_ENABLE_FILESYSTEM
-  
+
   // call page handler:
   size_t checkpoint1 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
   handler(*this, c);
   size_t checkpoint2 = heap_caps_get_free_size(MALLOC_CAP_8BIT);
   ESP_LOGD(TAG, "Serve %s: %d bytes used, %d free", uri, checkpoint1-checkpoint2, checkpoint2);
+}
+
+
+
+/**
+ * MgHandler.RequestPoll: init transmission from other context.
+ *
+ * mg_broadcast() signals the mg_mgr_poll() task to send an MG_EV_POLL to all connections.
+ */
+void MgHandler::RequestPoll()
+{
+#if MG_ENABLE_BROADCAST
+  if (!m_nc)
+    return;
+
+  if (xTaskGetCurrentTaskHandle() == MyNetManager.GetMongooseTaskHandle()) {
+    // we're in the NetManTask, can send directly:
+    HandleEvent(MG_EV_POLL, NULL);
+  } else {
+    MgHandler* origin = this;
+    mg_broadcast(MyNetManager.GetMongooseMgr(), HandlePoll, &origin, sizeof(origin));
+  }
+#endif // MG_ENABLE_BROADCAST
+}
+
+void MgHandler::HandlePoll(mg_connection* nc, int ev, void* p)
+{
+  MgHandler* origin = *((MgHandler**)p);
+  if (nc->user_data == origin)
+    origin->HandleEvent(MG_EV_POLL, NULL);
 }
 
 
@@ -444,7 +488,7 @@ HttpDataSender::~HttpDataSender()
     ESP_LOGV(TAG, "HttpDataSender %p abort, %d bytes sent", m_data, m_sent);
 }
 
-void HttpDataSender::HandleEvent(int ev, void* p)
+int HttpDataSender::HandleEvent(int ev, void* p)
 {
   switch (ev)
   {
@@ -467,10 +511,12 @@ void HttpDataSender::HandleEvent(int ev, void* p)
       }
     }
     break;
-    
+
     default:
       break;
   }
+
+  return ev;
 }
 
 
@@ -493,7 +539,7 @@ HttpStringSender::~HttpStringSender()
   delete m_msg;
 }
 
-void HttpStringSender::HandleEvent(int ev, void* p)
+int HttpStringSender::HandleEvent(int ev, void* p)
 {
   switch (ev)
   {
@@ -516,16 +562,18 @@ void HttpStringSender::HandleEvent(int ev, void* p)
       }
     }
     break;
-    
+
     default:
       break;
   }
+
+  return ev;
 }
 
 
 /**
  * CheckLogin: check username & password
- * 
+ *
  * We use "admin" as a fixed username for now to be able to extend users later on
  * and be compatible with the file based digest authentication.
  */
@@ -542,20 +590,24 @@ bool OvmsWebServer::CheckLogin(std::string username, std::string password)
  */
 user_session* OvmsWebServer::GetSession(http_message *hm)
 {
+  user_session* session = NULL;
   struct mg_str *cookie_header = mg_get_http_header(hm, "cookie");
   if (cookie_header == NULL) return NULL;
-  char ssid[21];
-  if (!mg_http_parse_header(cookie_header, SESSION_COOKIE_NAME, ssid, sizeof(ssid))) {
-    return NULL;
-  }
+  char ssid_buf[21], *ssid = ssid_buf;
+  mg_http_parse_header2(cookie_header, SESSION_COOKIE_NAME, &ssid, sizeof(ssid_buf));
   uint64_t sid = strtoull(ssid, NULL, 16);
-  for (int i = 0; i < NUM_SESSIONS; i++) {
-    if (m_sessions[i].id == sid) {
-      m_sessions[i].last_used = mg_time();
-      return &m_sessions[i];
+  if (sid != 0) {
+    for (int i = 0; i < NUM_SESSIONS; i++) {
+      if (m_sessions[i].id == sid) {
+        m_sessions[i].last_used = mg_time();
+        session = &m_sessions[i];
+        break;
+      }
     }
   }
-  return NULL;
+  if (ssid != ssid_buf)
+    free(ssid);
+  return session;
 }
 
 
@@ -581,10 +633,10 @@ user_session* OvmsWebServer::CreateSession(const http_message *hm)
     ESP_LOGD(TAG, "CreateSession: evicted %" INT64_X_FMT, oldest_s->id);
     s = oldest_s;
   }
-  
+
   /* Initialize new session. */
   s->last_used = mg_time();
-  
+
   /* Create an ID by putting various volatiles into a pot and stirring. */
   cs_sha1_ctx ctx;
   cs_sha1_init(&ctx);
@@ -599,7 +651,7 @@ user_session* OvmsWebServer::CreateSession(const http_message *hm)
   cs_sha1_update(&ctx, (const unsigned char *) sys.data(), sys.size());
   sys = StdMetrics.ms_v_bat_12v_voltage->AsString();
   cs_sha1_update(&ctx, (const unsigned char *) sys.data(), sys.size());
-  
+
   unsigned char digest[20];
   cs_sha1_final(digest, &ctx);
   s->id = *((uint64_t *) digest);
@@ -634,20 +686,20 @@ void OvmsWebServer::CheckSessions(void)
 
 /**
  * HandleLogin: show/process login form
- * 
+ *
  * This handler serves all URIs protected by PageAuth_Cookie,
  *  redirects to original URI or /home as indicated.
  */
 void OvmsWebServer::HandleLogin(PageEntry_t& p, PageContext_t& c)
 {
   std::string error;
-  
+
   if (c.method == "POST") {
     // validate login:
     std::string username = c.getvar("username");
     std::string password = c.getvar("password");
     user_session *s = NULL;
-    
+
     if (!CheckLogin(username, password)) {
       error += "<li>Login validation failed, please check username &amp; password</li>";
       ESP_LOGW(TAG, "HandleLogin: auth failure for username '%s'", username.c_str());
@@ -655,12 +707,17 @@ void OvmsWebServer::HandleLogin(PageEntry_t& p, PageContext_t& c)
     else if ((s = MyWebServer.CreateSession(c.hm)) == NULL) {
       error += "<li>Session creation failed, please try again later</li>";
     }
-    
+
     if (error == "") {
-      // ok: set cookie, reload menu & redirect to original uri or /home:
-      if (c.uri == "/login" || c.uri == "/logout" || c.uri == "/")
+      // ok: set cookie, reload menu, redirect to /cfg/init, /cfg/password, original uri or /home:
+      std::string init_step = MyConfig.GetParamValue("module", "init");
+      if (!init_step.empty() && init_step != "done")
+        c.uri = "/cfg/init";
+      else if (MyConfig.GetParamValue("password", "module").empty())
+        c.uri = "/cfg/password";
+      else if (c.uri == "/login" || c.uri == "/logout" || c.uri == "/")
         c.uri = "/home";
-      
+
       char shead[200];
       snprintf(shead, sizeof(shead),
         "Content-Type: text/html; charset=utf-8\r\n"
@@ -672,11 +729,11 @@ void OvmsWebServer::HandleLogin(PageEntry_t& p, PageContext_t& c)
         "<script>$(\"#menu\").load(\"/menu\"); loaduri(\"#main\", \"get\", \"%s\", {})</script>"
         , c.uri.c_str());
       c.done();
-      
+
       ESP_LOGI(TAG, "HandleLogin: '%s' logged in, sid %" INT64_X_FMT, username.c_str(), s->id);
       return;
     }
-    
+
     // output error, return to form:
     error = "<p class=\"lead\">Error!</p><ul class=\"errorlist\">" + error + "</ul>";
     c.head(403);
@@ -713,7 +770,7 @@ void OvmsWebServer::HandleLogout(PageEntry_t& p, PageContext_t& c)
     ESP_LOGI(TAG, "HandleLogout: session %" INT64_X_FMT " destroyed", s->id);
     MyWebServer.DestroySession(s);
   }
-  
+
   // erase cookie, reload menu & redirect to /home:
   char shead[200];
   snprintf(shead, sizeof(shead),
